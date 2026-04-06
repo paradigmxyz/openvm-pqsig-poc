@@ -118,7 +118,8 @@ unsafe fn execute_e12_impl<F: PrimeField32, CTX: ExecutionCtxTrait>(
             let message = exec_state
                 .vm_read_slice(RV32_MEMORY_AS, request.message_ptr, LEANSIG_MESSAGE_LENGTH)
                 .try_into()
-                .ok()?;
+                .ok()
+                .copied()?;
             let public_key = exec_state
                 .vm_read_slice(
                     RV32_MEMORY_AS,
@@ -136,7 +137,7 @@ unsafe fn execute_e12_impl<F: PrimeField32, CTX: ExecutionCtxTrait>(
             Some(verify_leansig_bytes(
                 scheme,
                 request.epoch,
-                message,
+                &message,
                 &public_key,
                 &signature,
             ))
