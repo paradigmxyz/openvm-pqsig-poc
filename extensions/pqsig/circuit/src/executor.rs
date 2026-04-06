@@ -115,11 +115,11 @@ unsafe fn execute_e12_impl<F: PrimeField32, CTX: ExecutionCtxTrait>(
         .and_then(|request| {
             let scheme = LeanSigSchemeId::from_u32(request.scheme_id)?;
             let scheme: SchemeId = scheme;
-            let message = exec_state
+            let message: &[u8; LEANSIG_MESSAGE_LENGTH] = exec_state
                 .vm_read_slice(RV32_MEMORY_AS, request.message_ptr, LEANSIG_MESSAGE_LENGTH)
                 .try_into()
-                .ok()
-                .copied()?;
+                .ok()?;
+            let message = *message;
             let public_key = exec_state
                 .vm_read_slice(
                     RV32_MEMORY_AS,
