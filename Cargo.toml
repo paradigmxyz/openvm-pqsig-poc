@@ -1,0 +1,48 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90.0"
+authors = ["Paradigm"]
+homepage = "https://github.com/paradigmxyz/openvm-pqsig-poc"
+repository = "https://github.com/paradigmxyz/openvm-pqsig-poc"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+members = [
+  "extensions/pqsig/guest",
+  "extensions/pqsig/transpiler",
+  "extensions/pqsig/circuit",
+  "guest-libs/pqsig",
+]
+resolver = "2"
+
+[workspace.dependencies]
+openvm-stark-backend = { git = "https://github.com/openvm-org/stark-backend.git", tag = "v1.3.0", default-features = false }
+openvm-stark-sdk = { git = "https://github.com/openvm-org/stark-backend.git", tag = "v1.3.0", default-features = false }
+openvm-platform = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-platform", default-features = false }
+openvm-instructions = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-instructions", default-features = false }
+openvm-instructions-derive = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-instructions-derive", default-features = false }
+openvm-transpiler = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-transpiler", default-features = false }
+openvm-circuit = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-circuit", default-features = false }
+openvm-circuit-derive = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-circuit-derive", default-features = false }
+openvm-rv32im-circuit = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-rv32im-circuit", default-features = false }
+openvm-pqsig-guest = { path = "extensions/pqsig/guest", default-features = false }
+openvm-pqsig-transpiler = { path = "extensions/pqsig/transpiler", default-features = false }
+openvm-pqsig-circuit = { path = "extensions/pqsig/circuit", default-features = false }
+openvm-pqsig = { path = "guest-libs/pqsig", default-features = false }
+leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "9d37fa9a6aa25660b9f353972f7e6c9191aa65d3" }
+
+derive-new = "0.6.0"
+derive_more = { version = "1.0.0", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+strum = { version = "0.26.3", features = ["derive"] }
+rrs-lib = "0.1.0"
+rand = "0.10"
+
+[profile.dev]
+opt-level = 1
+
+[profile.ci]
+inherits = "dev"
+debug = 1
+incremental = false

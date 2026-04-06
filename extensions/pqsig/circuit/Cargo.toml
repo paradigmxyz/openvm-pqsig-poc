@@ -1,0 +1,37 @@
+[package]
+name = "openvm-pqsig-circuit"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "OpenVM execution extension for post-quantum signature verification"
+
+[dependencies]
+openvm-stark-backend = { workspace = true }
+openvm-stark-sdk = { workspace = true }
+openvm-circuit-derive = { workspace = true }
+openvm-circuit = { workspace = true }
+openvm-instructions = { workspace = true }
+openvm-pqsig-transpiler = { workspace = true }
+openvm-pqsig-guest = { workspace = true }
+openvm-pqsig = { workspace = true }
+openvm-rv32im-circuit = { workspace = true }
+
+derive-new.workspace = true
+derive_more = { workspace = true, features = ["from"] }
+serde.workspace = true
+strum = { workspace = true }
+
+[dev-dependencies]
+leansig = { workspace = true }
+openvm-transpiler = { workspace = true }
+rand = "0.10"
+
+[features]
+default = ["parallel", "jemalloc"]
+parallel = ["openvm-circuit/parallel"]
+test-utils = ["openvm-circuit/test-utils"]
+tco = ["openvm-rv32im-circuit/tco"]
+aot = ["openvm-circuit/aot", "openvm-rv32im-circuit/aot"]
+mimalloc = ["openvm-circuit/mimalloc"]
+jemalloc = ["openvm-circuit/jemalloc"]
+jemalloc-prof = ["openvm-circuit/jemalloc-prof"]

@@ -1,0 +1,12 @@
+[package]
+name = "openvm-pqsig-guest"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Guest extension for post-quantum signature verification"
+
+[dependencies]
+openvm-platform = { workspace = true }
+
+[features]
+default = []
