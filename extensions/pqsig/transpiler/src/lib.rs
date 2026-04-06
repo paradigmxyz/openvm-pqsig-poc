@@ -49,6 +49,7 @@ impl<F: PrimeField32> TranspilerExtension<F> for PqSigTranspilerExtension {
 
 #[cfg(test)]
 mod tests {
+    use openvm_stark_backend::p3_baby_bear::BabyBear;
     use openvm_stark_backend::p3_field::PrimeField32;
 
     use super::*;
@@ -67,6 +68,7 @@ mod tests {
         let word = encode_r_type(10, 11, 12);
         let output = PqSigTranspilerExtension
             .process_custom(&[word])
+            .map(|output: TranspilerOutput<BabyBear>| output)
             .expect("custom instruction should transpile");
 
         assert_eq!(output.used_u32s, 1);

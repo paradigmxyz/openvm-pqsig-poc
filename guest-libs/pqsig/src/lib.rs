@@ -1,9 +1,9 @@
 #![cfg_attr(target_os = "zkvm", no_std)]
 
 pub use openvm_pqsig_guest::{LeanSigSchemeId as SchemeId, LeanSigVerifyRequest as VerifyRequest};
-use openvm_pqsig_guest::{
-    LeanSigSchemeId, LeanSigVerifyRequest, LEANSIG_MESSAGE_LENGTH, LEANSIG_VERIFY_REQUEST_LEN,
-};
+use openvm_pqsig_guest::{LeanSigSchemeId, LEANSIG_MESSAGE_LENGTH};
+#[cfg(target_os = "zkvm")]
+use openvm_pqsig_guest::{LeanSigVerifyRequest, LEANSIG_VERIFY_REQUEST_LEN};
 
 #[inline(always)]
 pub fn verify_leansig_bytes(
