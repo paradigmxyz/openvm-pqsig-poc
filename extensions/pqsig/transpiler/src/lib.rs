@@ -49,8 +49,8 @@ impl<F: PrimeField32> TranspilerExtension<F> for PqSigTranspilerExtension {
 
 #[cfg(test)]
 mod tests {
-    use openvm_stark_backend::p3_baby_bear::BabyBear;
     use openvm_stark_backend::p3_field::PrimeField32;
+    use openvm_stark_sdk::p3_baby_bear::BabyBear;
 
     use super::*;
 
