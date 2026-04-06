@@ -16,6 +16,7 @@ use openvm_circuit::{
     system::{SystemChipInventory, SystemCpuBuilder, SystemExecutor},
 };
 use openvm_circuit_derive::{AnyEnum, Executor, MeteredExecutor, PreflightExecutor, VmConfig};
+use openvm_instructions::LocalOpcode;
 use openvm_pqsig_transpiler::Rv32PqSigOpcode;
 use openvm_rv32im_circuit::{
     Rv32I, Rv32IExecutor, Rv32ImCpuProverExt, Rv32Io, Rv32IoExecutor, Rv32M, Rv32MExecutor,

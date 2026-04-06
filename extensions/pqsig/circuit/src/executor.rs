@@ -119,22 +119,26 @@ unsafe fn execute_e12_impl<F: PrimeField32, CTX: ExecutionCtxTrait>(
                 .vm_read_slice(RV32_MEMORY_AS, request.message_ptr, LEANSIG_MESSAGE_LENGTH)
                 .try_into()
                 .ok()?;
-            let public_key = exec_state.vm_read_slice(
-                RV32_MEMORY_AS,
-                request.public_key_ptr,
-                request.public_key_len as usize,
-            );
-            let signature = exec_state.vm_read_slice(
-                RV32_MEMORY_AS,
-                request.signature_ptr,
-                request.signature_len as usize,
-            );
+            let public_key = exec_state
+                .vm_read_slice(
+                    RV32_MEMORY_AS,
+                    request.public_key_ptr,
+                    request.public_key_len as usize,
+                )
+                .to_vec();
+            let signature = exec_state
+                .vm_read_slice(
+                    RV32_MEMORY_AS,
+                    request.signature_ptr,
+                    request.signature_len as usize,
+                )
+                .to_vec();
             Some(verify_leansig_bytes(
                 scheme,
                 request.epoch,
                 message,
-                public_key,
-                signature,
+                &public_key,
+                &signature,
             ))
         })
         .unwrap_or(false);
