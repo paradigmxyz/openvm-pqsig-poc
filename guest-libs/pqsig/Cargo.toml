@@ -18,9 +18,9 @@ sha2 = { version = "0.10", default-features = false }
 
 [target.'cfg(not(target_os = "zkvm"))'.dependencies]
 leansig = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
-rand = { workspace = true }
 
 [features]
 default = []

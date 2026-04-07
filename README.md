@@ -20,10 +20,47 @@ Current limitation:
 
 ## Crates
 
+- `examples`: runnable host-side demos for leaf and recursive-tree construction
 - `extensions/pqsig/guest`: guest instruction and request ABI
 - `extensions/pqsig/transpiler`: RISC-V custom instruction to OpenVM opcode mapping
 - `guest-libs/pqsig`: ergonomic verification API with native `leanSig` fallback
 - `extensions/pqsig/circuit`: execution extension and focused tests
+
+## Architecture
+
+The project is split into four layers:
+
+1. Request ABI and custom instruction plumbing.
+2. Verification APIs:
+   - single-signature verification
+   - batched verification
+   - detailed batch outcomes
+3. Aggregation leaf and recursive envelope construction:
+   - batch statements
+   - signer-set witnesses
+   - recursive aggregation envelopes and trees
+4. OpenVM execution harnesses for real guest execution and future proving work.
+
+The current proving boundary is explicit:
+
+- batched verification, signer-set commitment, leaf construction, and recursive envelope construction are real today
+- the expensive part is proving those computations through plain RV32 execution rather than a dedicated PQ/KoalaBear/Poseidon chip
+
+## Runnable Examples
+
+Host-side examples live in [`examples/`](file:///home/agent/workspace/openvm-pqsig-poc/examples).
+
+Build a single aggregation leaf from a small batch:
+
+```bash
+cargo run -p openvm-pqsig-examples --bin batch_leaf
+```
+
+Build a multi-level recursive aggregation tree:
+
+```bash
+cargo run -p openvm-pqsig-examples --bin recursive_tree
+```
 
 ## Supported leanSig schemes
 
@@ -72,6 +109,14 @@ The current proving blocker is precise:
 - that means proofs of the tiny verifier or tiny batch verifier still run through plain RV32 execution instead of a dedicated KoalaBear/Poseidon chip
 - a real run of the ignored tiny batch proof test retired about `5.1B` instructions across `544` segments, repeatedly hit the `4,194,304` trace-height ceiling and `1.2B`-cell segment cap, and was eventually `SIGKILL`ed during trace generation
 - the ignored proof tests in [`extensions/pqsig/circuit/tests/proved_tiny_poseidon.rs`](extensions/pqsig/circuit/tests/proved_tiny_poseidon.rs) mark that gap explicitly and stay out of CI until that proving path exists
+
+The current recursive aggregation scaffolding is also real:
+
+- [`BatchVerificationStatement`](file:///home/agent/workspace/openvm-pqsig-poc/guest-libs/pqsig/src/lib.rs)
+- [`SignerSetWitness`](file:///home/agent/workspace/openvm-pqsig-poc/guest-libs/pqsig/src/lib.rs)
+- [`BatchVerificationLeaf`](file:///home/agent/workspace/openvm-pqsig-poc/guest-libs/pqsig/src/lib.rs)
+- [`RecursiveAggregationEnvelope`](file:///home/agent/workspace/openvm-pqsig-poc/guest-libs/pqsig/src/lib.rs)
+- [`RecursiveAggregationTree`](file:///home/agent/workspace/openvm-pqsig-poc/guest-libs/pqsig/src/lib.rs)
 
 ## Aggregation roadmap
 

@@ -81,6 +81,13 @@ pub enum RecursiveAggregationInput {
     Envelope(RecursiveAggregationEnvelope),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveAggregationTree {
+    pub fanout: usize,
+    pub leaves: Vec<BatchVerificationLeaf>,
+    pub levels: Vec<Vec<RecursiveAggregationEnvelope>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregationDecodeError {
     UnexpectedEof,
@@ -583,6 +590,62 @@ pub fn aggregate_batch_verification_leaves(
     Some(build_recursive_aggregation_envelope(&inputs)?.node)
 }
 
+pub fn reduce_recursive_aggregation_inputs(
+    inputs: &[RecursiveAggregationInput],
+    fanout: usize,
+) -> Option<Vec<RecursiveAggregationEnvelope>> {
+    if fanout < 2 || inputs.is_empty() {
+        return None;
+    }
+
+    inputs
+        .chunks(fanout)
+        .map(build_recursive_aggregation_envelope)
+        .collect()
+}
+
+pub fn build_recursive_aggregation_tree(
+    leaves: &[BatchVerificationLeaf],
+    fanout: usize,
+) -> Option<RecursiveAggregationTree> {
+    if fanout < 2 || leaves.is_empty() {
+        return None;
+    }
+
+    let mut levels = Vec::new();
+    let mut current_inputs = leaves
+        .iter()
+        .cloned()
+        .map(RecursiveAggregationInput::Leaf)
+        .collect::<Vec<_>>();
+
+    loop {
+        let current_level = reduce_recursive_aggregation_inputs(&current_inputs, fanout)?;
+        current_inputs = current_level
+            .iter()
+            .cloned()
+            .map(RecursiveAggregationInput::Envelope)
+            .collect();
+        let done = current_level.len() == 1;
+        levels.push(current_level);
+        if done {
+            break;
+        }
+    }
+
+    Some(RecursiveAggregationTree {
+        fanout,
+        leaves: leaves.to_vec(),
+        levels,
+    })
+}
+
+impl RecursiveAggregationTree {
+    pub fn root(&self) -> Option<&RecursiveAggregationEnvelope> {
+        self.levels.last()?.first()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use leansig::{
@@ -898,6 +961,74 @@ mod tests {
     }
 
     #[test]
+    fn reduces_inputs_by_fanout_deterministically() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let (pk3, sig3, _, _) = sample_signature();
+
+        let leaves = vec![
+            build_batch_verification_leaf(
+                LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                epoch,
+                &message,
+                &[(&pk1[..], &sig1[..])],
+            )
+            .unwrap(),
+            build_batch_verification_leaf(
+                LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                epoch,
+                &message,
+                &[(&pk2[..], &sig2[..])],
+            )
+            .unwrap(),
+            build_batch_verification_leaf(
+                LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                epoch,
+                &message,
+                &[(&pk3[..], &sig3[..])],
+            )
+            .unwrap(),
+        ];
+        let inputs = leaves
+            .iter()
+            .cloned()
+            .map(RecursiveAggregationInput::Leaf)
+            .collect::<Vec<_>>();
+
+        let reduced =
+            reduce_recursive_aggregation_inputs(&inputs, 2).expect("fanout reduction should work");
+        assert_eq!(reduced.len(), 2);
+        assert_eq!(reduced[0].statement().signer_count, 2);
+        assert_eq!(reduced[1].statement().signer_count, 1);
+    }
+
+    #[test]
+    fn builds_recursive_tree_with_expected_levels() {
+        let mut leaves = Vec::new();
+        for _ in 0..5 {
+            let (pk, sig, message, epoch) = sample_signature();
+            leaves.push(
+                build_batch_verification_leaf(
+                    LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                    epoch,
+                    &message,
+                    &[(&pk[..], &sig[..])],
+                )
+                .unwrap(),
+            );
+        }
+
+        let tree = build_recursive_aggregation_tree(&leaves, 2).expect("tree should build");
+        assert_eq!(tree.fanout, 2);
+        assert_eq!(tree.leaves.len(), 5);
+        assert_eq!(tree.levels.len(), 3);
+        assert_eq!(tree.levels[0].len(), 3);
+        assert_eq!(tree.levels[1].len(), 2);
+        assert_eq!(tree.levels[2].len(), 1);
+        assert_eq!(tree.root().unwrap().statement().signer_count, 5);
+    }
+
+    #[test]
     fn statement_round_trips_through_bytes() {
         let (pk1, sig1, message, epoch) = sample_signature();
         let leaf = build_batch_verification_leaf(
@@ -1052,6 +1183,7 @@ mod tests {
 #[cfg(not(target_os = "zkvm"))]
 mod native {
     use leansig::{
+        inc_encoding::target_sum::TargetSumEncoding,
         serialization::Serializable,
         signature::{
             generalized_xmss::{
@@ -1066,12 +1198,23 @@ mod native {
                         SIGTargetSumLifetime20W4NoOff, SIGTargetSumLifetime20W8NoOff,
                     },
                 },
+                GeneralizedXMSSSignatureScheme,
             },
             SignatureScheme,
+        },
+        symmetric::{
+            message_hash::poseidon::PoseidonMessageHash, prf::shake_to_field::ShakePRFtoF,
+            tweak_hash::poseidon::PoseidonTweakHash,
         },
     };
 
     use super::*;
+
+    type TinyPrf = ShakePRFtoF<1, 1>;
+    type TinyTh = PoseidonTweakHash<1, 1, 2, 4, 31>;
+    type TinyMh = PoseidonMessageHash<1, 1, 1, 31, 2, 2, 9>;
+    type TinyIe = TargetSumEncoding<TinyMh, 15>;
+    type TinySig = GeneralizedXMSSSignatureScheme<TinyPrf, TinyIe, TinyTh, 4>;
 
     pub(super) fn verify_leansig_bytes_native(
         scheme: LeanSigSchemeId,
@@ -1153,6 +1296,9 @@ mod native {
                     signature_ssz,
                 )
             }
+            LeanSigSchemeId::TinyPoseidonTestOnly => {
+                verify_with_scheme::<TinySig>(epoch, message, public_key_ssz, signature_ssz)
+            }
         }
     }
 
@@ -1191,6 +1337,9 @@ mod native {
                 verify_batch_with_scheme::<SIGAbortingTargetSumLifetime6Dim46Base8>(
                     epoch, message, batch,
                 )
+            }
+            LeanSigSchemeId::TinyPoseidonTestOnly => {
+                verify_batch_with_scheme::<TinySig>(epoch, message, batch)
             }
         }
     }

@@ -23,10 +23,11 @@ pub enum LeanSigSchemeId {
     TargetSumLifetime20W4NoOff = 6,
     TargetSumLifetime20W8NoOff = 7,
     AbortingTargetSumLifetime6Dim46Base8 = 8,
+    TinyPoseidonTestOnly = 9,
 }
 
 impl LeanSigSchemeId {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::TargetSumLifetime18W1NoOff,
         Self::TargetSumLifetime18W2NoOff,
         Self::TargetSumLifetime18W4NoOff,
@@ -36,6 +37,7 @@ impl LeanSigSchemeId {
         Self::TargetSumLifetime20W4NoOff,
         Self::TargetSumLifetime20W8NoOff,
         Self::AbortingTargetSumLifetime6Dim46Base8,
+        Self::TinyPoseidonTestOnly,
     ];
 
     pub const fn from_u32(value: u32) -> Option<Self> {
@@ -49,6 +51,7 @@ impl LeanSigSchemeId {
             6 => Some(Self::TargetSumLifetime20W4NoOff),
             7 => Some(Self::TargetSumLifetime20W8NoOff),
             8 => Some(Self::AbortingTargetSumLifetime6Dim46Base8),
+            9 => Some(Self::TinyPoseidonTestOnly),
             _ => None,
         }
     }

@@ -1,0 +1,10 @@
+[package]
+name = "openvm-pqsig-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+openvm-pqsig = { path = "../guest-libs/pqsig", features = ["software"] }

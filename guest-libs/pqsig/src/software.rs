@@ -1,10 +1,24 @@
 use core::array;
 
+#[cfg(not(target_os = "zkvm"))]
+use leansig::{
+    inc_encoding::target_sum::TargetSumEncoding,
+    serialization::Serializable,
+    signature::{
+        generalized_xmss::GeneralizedXMSSSignatureScheme, SignatureScheme, SignatureSchemeSecretKey,
+    },
+    symmetric::{
+        message_hash::poseidon::PoseidonMessageHash, prf::shake_to_field::ShakePRFtoF,
+        tweak_hash::poseidon::PoseidonTweakHash,
+    },
+};
 use p3_field::{PrimeCharacteristicRing, PrimeField32, PrimeField64};
 use p3_koala_bear::{
     default_koalabear_poseidon1_16, default_koalabear_poseidon1_24, KoalaBear, Poseidon1KoalaBear,
 };
 use p3_symmetric::CryptographicPermutation;
+#[cfg(not(target_os = "zkvm"))]
+use rand::{rngs::StdRng, SeedableRng};
 #[cfg(not(target_os = "zkvm"))]
 use std::sync::OnceLock;
 
@@ -41,6 +55,17 @@ const SIGNER_SET_EMPTY_SEPARATOR: u8 = 0x05;
 const LEAF_INPUT_LEN: usize = PARAMETER_LEN + TWEAK_LEN + NUM_CHAINS * DOMAIN_LEN;
 const CAPACITY_LEN: usize = 4;
 
+#[cfg(not(target_os = "zkvm"))]
+type TinyPrf = ShakePRFtoF<1, 1>;
+#[cfg(not(target_os = "zkvm"))]
+type TinyTh = PoseidonTweakHash<1, 1, 2, 4, 31>;
+#[cfg(not(target_os = "zkvm"))]
+type TinyMh = PoseidonMessageHash<1, 1, 1, 31, 2, 2, 9>;
+#[cfg(not(target_os = "zkvm"))]
+type TinyIe = TargetSumEncoding<TinyMh, 15>;
+#[cfg(not(target_os = "zkvm"))]
+type TinySig = GeneralizedXMSSSignatureScheme<TinyPrf, TinyIe, TinyTh, 4>;
+
 #[derive(Clone, Copy)]
 struct PublicKey {
     root: [F; DOMAIN_LEN],
@@ -58,6 +83,35 @@ struct Signature {
 pub struct TinyPoseidonBatchSummary {
     pub signer_set_root: [u8; HASH_BYTES],
     pub signer_count: usize,
+}
+
+#[cfg(not(target_os = "zkvm"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TinyPoseidonFixture {
+    pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub message: [u8; MESSAGE_LEN],
+    pub epoch: u32,
+}
+
+#[cfg(not(target_os = "zkvm"))]
+pub fn generate_tiny_poseidon_fixture(seed: u64) -> TinyPoseidonFixture {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let epoch = 3u32;
+    let message = [13u8; MESSAGE_LEN];
+    let (public_key, mut secret_key) = TinySig::key_gen(&mut rng, 0, TinySig::LIFETIME as usize);
+    while !secret_key.get_prepared_interval().contains(&(epoch as u64)) {
+        secret_key.advance_preparation();
+    }
+    let signature = TinySig::sign(&secret_key, epoch, &message)
+        .expect("tiny leanSig-family signature should be creatable");
+
+    TinyPoseidonFixture {
+        public_key: public_key.to_bytes(),
+        signature: signature.to_bytes(),
+        message,
+        epoch,
+    }
 }
 
 pub fn verify_tiny_poseidon_signature(
