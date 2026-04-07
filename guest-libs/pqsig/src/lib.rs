@@ -45,6 +45,26 @@ pub fn verify_leansig_bytes(
     }
 }
 
+#[inline(always)]
+pub fn verify_leansig_batch_bytes(
+    scheme: LeanSigSchemeId,
+    epoch: u32,
+    message: &[u8; LEANSIG_MESSAGE_LENGTH],
+    batch: &[(&[u8], &[u8])],
+) -> bool {
+    #[cfg(not(target_os = "zkvm"))]
+    {
+        native::verify_leansig_batch_bytes_native(scheme, epoch, message, batch)
+    }
+
+    #[cfg(target_os = "zkvm")]
+    {
+        batch.iter().all(|(public_key, signature)| {
+            verify_leansig_bytes(scheme, epoch, message, public_key, signature)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use leansig::{
@@ -107,6 +127,35 @@ mod tests {
                 &[4, 5, 6],
             ));
         }
+    }
+
+    #[test]
+    fn native_batch_verifier_accepts_multiple_real_signatures() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let batch = [(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])];
+
+        assert!(verify_leansig_batch_bytes(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &batch,
+        ));
+    }
+
+    #[test]
+    fn native_batch_verifier_rejects_invalid_member() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, mut sig2, _, _) = sample_signature();
+        sig2[0] ^= 1;
+        let batch = [(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])];
+
+        assert!(!verify_leansig_batch_bytes(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &batch,
+        ));
     }
 }
 
@@ -217,6 +266,45 @@ mod native {
         }
     }
 
+    pub(super) fn verify_leansig_batch_bytes_native(
+        scheme: LeanSigSchemeId,
+        epoch: u32,
+        message: &[u8; LEANSIG_MESSAGE_LENGTH],
+        batch: &[(&[u8], &[u8])],
+    ) -> bool {
+        match scheme {
+            LeanSigSchemeId::TargetSumLifetime18W1NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime18W1NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime18W2NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime18W2NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime18W4NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime18W4NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime18W8NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime18W8NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime20W1NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime20W1NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime20W2NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime20W2NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime20W4NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime20W4NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::TargetSumLifetime20W8NoOff => {
+                verify_batch_with_scheme::<SIGTargetSumLifetime20W8NoOff>(epoch, message, batch)
+            }
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8 => {
+                verify_batch_with_scheme::<SIGAbortingTargetSumLifetime6Dim46Base8>(
+                    epoch, message, batch,
+                )
+            }
+        }
+    }
+
     fn verify_with_scheme<S>(
         epoch: u32,
         message: &[u8; LEANSIG_MESSAGE_LENGTH],
@@ -234,5 +322,18 @@ mod native {
         };
 
         S::verify(&public_key, epoch, message, &signature)
+    }
+
+    fn verify_batch_with_scheme<S>(
+        epoch: u32,
+        message: &[u8; LEANSIG_MESSAGE_LENGTH],
+        batch: &[(&[u8], &[u8])],
+    ) -> bool
+    where
+        S: SignatureScheme,
+    {
+        batch.iter().all(|(public_key, signature)| {
+            verify_with_scheme::<S>(epoch, message, public_key, signature)
+        })
     }
 }

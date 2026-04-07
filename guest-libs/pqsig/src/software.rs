@@ -96,6 +96,16 @@ pub fn verify_tiny_poseidon_signature(
     )
 }
 
+pub fn verify_tiny_poseidon_batch(
+    batch: &[(&[u8], &[u8])],
+    epoch: u32,
+    message: &[u8; MESSAGE_LEN],
+) -> bool {
+    batch.iter().all(|(public_key, signature)| {
+        verify_tiny_poseidon_signature(public_key, signature, epoch, message)
+    })
+}
+
 fn parse_public_key(bytes: &[u8]) -> Option<PublicKey> {
     if bytes.len() != PK_LEN {
         return None;
@@ -476,63 +486,97 @@ mod tests {
     use p3_field::PrimeField32;
 
     use super::{
-        vectors::{TEST_TINY_EPOCH, TEST_TINY_MESSAGE, TEST_TINY_PK, TEST_TINY_SIG},
-        verify_tiny_poseidon_signature,
+        vectors::{
+            TEST_TINY_A_EPOCH, TEST_TINY_A_MESSAGE, TEST_TINY_A_PK, TEST_TINY_A_SIG,
+            TEST_TINY_B_EPOCH, TEST_TINY_B_MESSAGE, TEST_TINY_B_PK, TEST_TINY_B_SIG,
+        },
+        verify_tiny_poseidon_batch, verify_tiny_poseidon_signature,
     };
 
     #[test]
     fn verifies_reference_vector() {
         assert!(verify_tiny_poseidon_signature(
-            &TEST_TINY_PK,
-            &TEST_TINY_SIG,
-            TEST_TINY_EPOCH,
-            &TEST_TINY_MESSAGE,
+            &TEST_TINY_A_PK,
+            &TEST_TINY_A_SIG,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
         ));
     }
 
     #[test]
     fn rejects_tampered_signature() {
-        let mut tampered = TEST_TINY_SIG;
+        let mut tampered = TEST_TINY_A_SIG;
         tampered[64] ^= 1;
         assert!(!verify_tiny_poseidon_signature(
-            &TEST_TINY_PK,
+            &TEST_TINY_A_PK,
             &tampered,
-            TEST_TINY_EPOCH,
-            &TEST_TINY_MESSAGE,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
         ));
     }
 
     #[test]
     fn rejects_non_canonical_public_key_field_encoding() {
-        let mut tampered = TEST_TINY_PK;
+        let mut tampered = TEST_TINY_A_PK;
         tampered[..4].copy_from_slice(&super::F::ORDER_U32.to_le_bytes());
         assert!(!verify_tiny_poseidon_signature(
             &tampered,
-            &TEST_TINY_SIG,
-            TEST_TINY_EPOCH,
-            &TEST_TINY_MESSAGE,
+            &TEST_TINY_A_SIG,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
         ));
     }
 
     #[test]
     fn rejects_out_of_range_epoch() {
         assert!(!verify_tiny_poseidon_signature(
-            &TEST_TINY_PK,
-            &TEST_TINY_SIG,
+            &TEST_TINY_A_PK,
+            &TEST_TINY_A_SIG,
             1 << super::TREE_DEPTH,
-            &TEST_TINY_MESSAGE,
+            &TEST_TINY_A_MESSAGE,
         ));
     }
 
     #[test]
     fn rejects_malformed_signature_offsets() {
-        let mut tampered = TEST_TINY_SIG;
+        let mut tampered = TEST_TINY_A_SIG;
         tampered[..4].copy_from_slice(&0u32.to_le_bytes());
         assert!(!verify_tiny_poseidon_signature(
-            &TEST_TINY_PK,
+            &TEST_TINY_A_PK,
             &tampered,
-            TEST_TINY_EPOCH,
-            &TEST_TINY_MESSAGE,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        ));
+    }
+
+    #[test]
+    fn verifies_batch_of_real_signatures() {
+        assert_eq!(TEST_TINY_A_EPOCH, TEST_TINY_B_EPOCH);
+        assert_eq!(TEST_TINY_A_MESSAGE, TEST_TINY_B_MESSAGE);
+
+        let batch = [
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+            (&TEST_TINY_B_PK[..], &TEST_TINY_B_SIG[..]),
+        ];
+        assert!(verify_tiny_poseidon_batch(
+            &batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        ));
+    }
+
+    #[test]
+    fn batch_rejects_any_tampered_signature() {
+        let mut tampered = TEST_TINY_B_SIG;
+        tampered[80] ^= 1;
+        let batch = [
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+            (&TEST_TINY_B_PK[..], &tampered[..]),
+        ];
+        assert!(!verify_tiny_poseidon_batch(
+            &batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
         ));
     }
 }
