@@ -75,6 +75,13 @@ pub fn verify_leansig_batch_bytes_detailed(
     message: &[u8; LEANSIG_MESSAGE_LENGTH],
     batch: &[(&[u8], &[u8])],
 ) -> BatchVerificationResult {
+    if batch.is_empty() {
+        return BatchVerificationResult {
+            verified_count: 0,
+            first_invalid_index: Some(0),
+        };
+    }
+
     #[cfg(not(target_os = "zkvm"))]
     {
         native::verify_leansig_batch_bytes_native(scheme, epoch, message, batch)
@@ -177,6 +184,30 @@ mod tests {
     }
 
     #[test]
+    fn native_batch_verifier_rejects_empty_batch() {
+        let (_pk, _sig, message, epoch) = sample_signature();
+
+        assert_eq!(
+            verify_leansig_batch_bytes_detailed(
+                LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                epoch,
+                &message,
+                &[],
+            ),
+            BatchVerificationResult {
+                verified_count: 0,
+                first_invalid_index: Some(0),
+            }
+        );
+        assert!(!verify_leansig_batch_bytes(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[],
+        ));
+    }
+
+    #[test]
     fn native_batch_verifier_rejects_invalid_member() {
         let (pk1, sig1, message, epoch) = sample_signature();
         let (pk2, mut sig2, _, _) = sample_signature();
@@ -207,6 +238,25 @@ mod tests {
 
         assert_eq!(
             result,
+            BatchVerificationResult {
+                verified_count: 1,
+                first_invalid_index: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn native_batch_verifier_rejects_malformed_member_serialization() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let batch = [(&pk1[..], &sig1[..]), (&[1u8, 2, 3][..], &[4u8, 5, 6][..])];
+
+        assert_eq!(
+            verify_leansig_batch_bytes_detailed(
+                LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+                epoch,
+                &message,
+                &batch,
+            ),
             BatchVerificationResult {
                 verified_count: 1,
                 first_invalid_index: Some(1),

@@ -35,6 +35,9 @@ const SIG_LEN: usize = HASHES_OFFSET + NUM_CHAINS * HASH_BYTES;
 const TREE_SEPARATOR: u8 = 0x01;
 const CHAIN_SEPARATOR: u8 = 0x00;
 const MESSAGE_SEPARATOR: u8 = 0x02;
+const SIGNER_SET_LEAF_SEPARATOR: u8 = 0x03;
+const SIGNER_SET_ACCUMULATOR_SEPARATOR: u8 = 0x04;
+const SIGNER_SET_EMPTY_SEPARATOR: u8 = 0x05;
 const LEAF_INPUT_LEN: usize = PARAMETER_LEN + TWEAK_LEN + NUM_CHAINS * DOMAIN_LEN;
 const CAPACITY_LEN: usize = 4;
 
@@ -49,6 +52,12 @@ struct Signature {
     rho: [F; RANDOMNESS_LEN],
     path: [[F; DOMAIN_LEN]; TREE_DEPTH],
     hashes: [[F; DOMAIN_LEN]; NUM_CHAINS],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TinyPoseidonBatchSummary {
+    pub signer_set_root: [u8; HASH_BYTES],
+    pub signer_count: usize,
 }
 
 pub fn verify_tiny_poseidon_signature(
@@ -67,6 +76,43 @@ pub fn verify_tiny_poseidon_signature(
     let Some(signature) = parse_signature(signature_ssz) else {
         return false;
     };
+    verify_tiny_poseidon_signature_inner(&public_key, &signature, epoch, message)
+}
+
+pub fn verify_tiny_poseidon_batch(
+    batch: &[(&[u8], &[u8])],
+    epoch: u32,
+    message: &[u8; MESSAGE_LEN],
+) -> bool {
+    verify_tiny_poseidon_batch_with_summary(batch, epoch, message).is_some()
+}
+
+pub fn verify_tiny_poseidon_batch_with_summary(
+    batch: &[(&[u8], &[u8])],
+    epoch: u32,
+    message: &[u8; MESSAGE_LEN],
+) -> Option<TinyPoseidonBatchSummary> {
+    if batch.is_empty() || epoch >= (1u32 << TREE_DEPTH) {
+        return None;
+    }
+
+    for (public_key_ssz, signature_ssz) in batch.iter().copied() {
+        let public_key = parse_public_key(public_key_ssz)?;
+        let signature = parse_signature(signature_ssz)?;
+        if !verify_tiny_poseidon_signature_inner(&public_key, &signature, epoch, message) {
+            return None;
+        }
+    }
+
+    Some(commit_tiny_poseidon_signer_set(batch)?)
+}
+
+fn verify_tiny_poseidon_signature_inner(
+    public_key: &PublicKey,
+    signature: &Signature,
+    epoch: u32,
+    message: &[u8; MESSAGE_LEN],
+) -> bool {
     let Some(codeword) = encode_target_sum(&public_key.parameter, epoch, &signature.rho, message)
     else {
         return false;
@@ -96,14 +142,91 @@ pub fn verify_tiny_poseidon_signature(
     )
 }
 
-pub fn verify_tiny_poseidon_batch(
-    batch: &[(&[u8], &[u8])],
-    epoch: u32,
-    message: &[u8; MESSAGE_LEN],
-) -> bool {
-    batch.iter().all(|(public_key, signature)| {
-        verify_tiny_poseidon_signature(public_key, signature, epoch, message)
+fn commit_tiny_poseidon_signer_set(batch: &[(&[u8], &[u8])]) -> Option<TinyPoseidonBatchSummary> {
+    let mut signer_count = 0usize;
+    let mut signer_set_acc = empty_signer_set_accumulator();
+    let mut previous_public_key: Option<&[u8]> = None;
+
+    while let Some((public_key_ssz, public_key)) =
+        next_unique_public_key(batch, previous_public_key)
+    {
+        let leaf = hash_signer_set_leaf(&public_key);
+        signer_set_acc = hash_signer_set_accumulator(signer_count as u32, &signer_set_acc, &leaf);
+        signer_count += 1;
+        previous_public_key = Some(public_key_ssz);
+    }
+
+    Some(TinyPoseidonBatchSummary {
+        signer_set_root: encode_domain_bytes(&signer_set_acc),
+        signer_count,
     })
+}
+
+fn next_unique_public_key<'a>(
+    batch: &'a [(&'a [u8], &'a [u8])],
+    previous_public_key: Option<&[u8]>,
+) -> Option<(&'a [u8], PublicKey)> {
+    let mut selected: Option<(&[u8], PublicKey)> = None;
+
+    for (public_key_ssz, _) in batch.iter().copied() {
+        if previous_public_key.is_some_and(|prev| public_key_ssz <= prev) {
+            continue;
+        }
+        let public_key = parse_public_key(public_key_ssz)?;
+        if selected.is_none_or(|(selected_bytes, _)| public_key_ssz < selected_bytes) {
+            selected = Some((public_key_ssz, public_key));
+        }
+    }
+
+    selected
+}
+
+fn empty_signer_set_accumulator() -> [F; DOMAIN_LEN] {
+    let mut state = [F::ZERO; 16];
+    state[..TWEAK_LEN].copy_from_slice(&encode_signer_set_tweak(SIGNER_SET_EMPTY_SEPARATOR, 0));
+    poseidon_compress::<16, DOMAIN_LEN>(&poseidon1_16(), &state)
+}
+
+fn hash_signer_set_leaf(public_key: &PublicKey) -> [F; DOMAIN_LEN] {
+    let mut state = [F::ZERO; 16];
+    state[..TWEAK_LEN].copy_from_slice(&encode_signer_set_tweak(SIGNER_SET_LEAF_SEPARATOR, 0));
+    state[TWEAK_LEN..TWEAK_LEN + DOMAIN_LEN].copy_from_slice(&public_key.root);
+    state[TWEAK_LEN + DOMAIN_LEN..TWEAK_LEN + DOMAIN_LEN + PARAMETER_LEN]
+        .copy_from_slice(&public_key.parameter);
+    poseidon_compress::<16, DOMAIN_LEN>(&poseidon1_16(), &state)
+}
+
+fn hash_signer_set_accumulator(
+    position: u32,
+    accumulator: &[F; DOMAIN_LEN],
+    leaf: &[F; DOMAIN_LEN],
+) -> [F; DOMAIN_LEN] {
+    let mut state = [F::ZERO; 24];
+    state[..TWEAK_LEN].copy_from_slice(&encode_signer_set_tweak(
+        SIGNER_SET_ACCUMULATOR_SEPARATOR,
+        position,
+    ));
+    state[TWEAK_LEN..TWEAK_LEN + DOMAIN_LEN].copy_from_slice(accumulator);
+    state[TWEAK_LEN + DOMAIN_LEN..TWEAK_LEN + 2 * DOMAIN_LEN].copy_from_slice(leaf);
+    poseidon_compress::<24, DOMAIN_LEN>(&poseidon1_24(), &state)
+}
+
+fn encode_signer_set_tweak(separator: u8, position: u32) -> [F; TWEAK_LEN] {
+    let mut acc = ((position as u64) << 8) | separator as u64;
+    array::from_fn(|_| {
+        let digit = acc % F::ORDER_U64;
+        acc /= F::ORDER_U64;
+        F::from_u64(digit)
+    })
+}
+
+fn encode_domain_bytes(domain: &[F; DOMAIN_LEN]) -> [u8; HASH_BYTES] {
+    let mut out = [0u8; HASH_BYTES];
+    for (index, element) in domain.iter().enumerate() {
+        let start = index * 4;
+        out[start..start + 4].copy_from_slice(&element.as_canonical_u32().to_le_bytes());
+    }
+    out
 }
 
 fn parse_public_key(bytes: &[u8]) -> Option<PublicKey> {
@@ -490,7 +613,8 @@ mod tests {
             TEST_TINY_A_EPOCH, TEST_TINY_A_MESSAGE, TEST_TINY_A_PK, TEST_TINY_A_SIG,
             TEST_TINY_B_EPOCH, TEST_TINY_B_MESSAGE, TEST_TINY_B_PK, TEST_TINY_B_SIG,
         },
-        verify_tiny_poseidon_batch, verify_tiny_poseidon_signature,
+        verify_tiny_poseidon_batch, verify_tiny_poseidon_batch_with_summary,
+        verify_tiny_poseidon_signature,
     };
 
     #[test]
@@ -566,6 +690,21 @@ mod tests {
     }
 
     #[test]
+    fn batch_rejects_empty_input() {
+        assert!(!verify_tiny_poseidon_batch(
+            &[],
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        ));
+        assert!(verify_tiny_poseidon_batch_with_summary(
+            &[],
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn batch_rejects_any_tampered_signature() {
         let mut tampered = TEST_TINY_B_SIG;
         tampered[80] ^= 1;
@@ -578,5 +717,65 @@ mod tests {
             TEST_TINY_A_EPOCH,
             &TEST_TINY_A_MESSAGE,
         ));
+    }
+
+    #[test]
+    fn batch_summary_is_order_independent_and_deduplicates_signers() {
+        let batch = [
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+            (&TEST_TINY_B_PK[..], &TEST_TINY_B_SIG[..]),
+        ];
+        let reverse_batch = [
+            (&TEST_TINY_B_PK[..], &TEST_TINY_B_SIG[..]),
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+        ];
+        let duplicate_batch = [
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+            (&TEST_TINY_B_PK[..], &TEST_TINY_B_SIG[..]),
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+        ];
+
+        let summary = verify_tiny_poseidon_batch_with_summary(
+            &batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        )
+        .expect("valid batch should produce a signer-set commitment");
+        let reversed = verify_tiny_poseidon_batch_with_summary(
+            &reverse_batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        )
+        .expect("reordered batch should produce a signer-set commitment");
+        let deduped = verify_tiny_poseidon_batch_with_summary(
+            &duplicate_batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        )
+        .expect("duplicate signer batch should still produce a signer-set commitment");
+
+        assert_eq!(summary.signer_count, 2);
+        assert_eq!(summary, reversed);
+        assert_eq!(summary, deduped);
+    }
+
+    #[test]
+    fn batch_rejects_malformed_member_serialization() {
+        let malformed_batch = [
+            (&TEST_TINY_A_PK[..], &TEST_TINY_A_SIG[..]),
+            (&TEST_TINY_B_PK[..4], &TEST_TINY_B_SIG[..]),
+        ];
+
+        assert!(!verify_tiny_poseidon_batch(
+            &malformed_batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        ));
+        assert!(verify_tiny_poseidon_batch_with_summary(
+            &malformed_batch,
+            TEST_TINY_A_EPOCH,
+            &TEST_TINY_A_MESSAGE,
+        )
+        .is_none());
     }
 }
