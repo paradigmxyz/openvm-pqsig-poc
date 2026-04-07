@@ -8,6 +8,19 @@ use openvm_pqsig_guest::{LeanSigVerifyRequest, LEANSIG_VERIFY_REQUEST_LEN};
 #[cfg(any(test, feature = "software"))]
 pub mod software;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchVerificationResult {
+    pub verified_count: usize,
+    pub first_invalid_index: Option<usize>,
+}
+
+impl BatchVerificationResult {
+    #[inline(always)]
+    pub const fn all_valid(self) -> bool {
+        self.first_invalid_index.is_none()
+    }
+}
+
 #[inline(always)]
 pub fn verify_leansig_bytes(
     scheme: LeanSigSchemeId,
@@ -52,6 +65,16 @@ pub fn verify_leansig_batch_bytes(
     message: &[u8; LEANSIG_MESSAGE_LENGTH],
     batch: &[(&[u8], &[u8])],
 ) -> bool {
+    verify_leansig_batch_bytes_detailed(scheme, epoch, message, batch).all_valid()
+}
+
+#[inline(always)]
+pub fn verify_leansig_batch_bytes_detailed(
+    scheme: LeanSigSchemeId,
+    epoch: u32,
+    message: &[u8; LEANSIG_MESSAGE_LENGTH],
+    batch: &[(&[u8], &[u8])],
+) -> BatchVerificationResult {
     #[cfg(not(target_os = "zkvm"))]
     {
         native::verify_leansig_batch_bytes_native(scheme, epoch, message, batch)
@@ -59,9 +82,19 @@ pub fn verify_leansig_batch_bytes(
 
     #[cfg(target_os = "zkvm")]
     {
-        batch.iter().all(|(public_key, signature)| {
-            verify_leansig_bytes(scheme, epoch, message, public_key, signature)
-        })
+        for (index, (public_key, signature)) in batch.iter().enumerate() {
+            if !verify_leansig_bytes(scheme, epoch, message, public_key, signature) {
+                return BatchVerificationResult {
+                    verified_count: index,
+                    first_invalid_index: Some(index),
+                };
+            }
+        }
+
+        BatchVerificationResult {
+            verified_count: batch.len(),
+            first_invalid_index: None,
+        }
     }
 }
 
@@ -156,6 +189,29 @@ mod tests {
             &message,
             &batch,
         ));
+    }
+
+    #[test]
+    fn native_batch_verifier_reports_first_invalid_index() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, mut sig2, _, _) = sample_signature();
+        sig2[0] ^= 1;
+        let batch = [(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])];
+
+        let result = verify_leansig_batch_bytes_detailed(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &batch,
+        );
+
+        assert_eq!(
+            result,
+            BatchVerificationResult {
+                verified_count: 1,
+                first_invalid_index: Some(1),
+            }
+        );
     }
 }
 
@@ -271,7 +327,7 @@ mod native {
         epoch: u32,
         message: &[u8; LEANSIG_MESSAGE_LENGTH],
         batch: &[(&[u8], &[u8])],
-    ) -> bool {
+    ) -> BatchVerificationResult {
         match scheme {
             LeanSigSchemeId::TargetSumLifetime18W1NoOff => {
                 verify_batch_with_scheme::<SIGTargetSumLifetime18W1NoOff>(epoch, message, batch)
@@ -328,12 +384,22 @@ mod native {
         epoch: u32,
         message: &[u8; LEANSIG_MESSAGE_LENGTH],
         batch: &[(&[u8], &[u8])],
-    ) -> bool
+    ) -> BatchVerificationResult
     where
         S: SignatureScheme,
     {
-        batch.iter().all(|(public_key, signature)| {
-            verify_with_scheme::<S>(epoch, message, public_key, signature)
-        })
+        for (index, (public_key, signature)) in batch.iter().enumerate() {
+            if !verify_with_scheme::<S>(epoch, message, public_key, signature) {
+                return BatchVerificationResult {
+                    verified_count: index,
+                    first_invalid_index: Some(index),
+                };
+            }
+        }
+
+        BatchVerificationResult {
+            verified_count: batch.len(),
+            first_invalid_index: None,
+        }
     }
 }
