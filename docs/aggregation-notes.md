@@ -16,6 +16,13 @@ Why it matters here:
 - the current PoC already defines a stable guest ABI for single-signature verification
 - the next step is to lift that ABI into a guest program that verifies many signatures and emits a signer-set commitment
 
+Current repository status:
+
+- the tiny Poseidon software path now has a real batched verifier summary that returns `signer_count` plus a Poseidon-based commitment to the sorted, deduplicated signer set
+- the matching OpenVM guest example executes today as a real batch-verification leaf job
+- proving is still blocked because [`extensions/pqsig/circuit/src/lib.rs`](../extensions/pqsig/circuit/src/lib.rs) does not yet add any AIR or prover logic for `PqSig`, so the only proof path is plain RV32 interpretation of the software verifier
+- on a real run of the ignored batch-proof test, that plain-RV32 path reached about `5.1B` retired instructions across `544` segments, repeatedly tripped the `4,194,304` height ceiling and `1.2B`-cell cap, and then died with `SIGKILL` during trace generation
+
 ## Practical aggregation directions
 
 One important design takeaway from the STARK aggregation literature is that simple hash-based signatures are often better aggregation targets than more optimized many-time schemes. The reason is that in proof-based aggregation, verifier hash count dominates, while raw signature size is only witness data.
@@ -60,6 +67,12 @@ Best fit when:
 4. Replace the placeholder `VmCircuitExtension` with a real proving path.
 5. Add recursive aggregation for batches of child proofs.
 6. Evaluate whether packing helps before recursive composition.
+
+The next feasible proving move is not “prove bigger leanSig on RV32.” It is:
+
+1. keep the tiny batch leaf honest and small
+2. expose the signer-set commitment as the future public-value boundary
+3. either add a dedicated Poseidon/KoalaBear proving chip for that leaf or swap in an even simpler hash-based leaf verifier before attempting recursive aggregation
 
 ## Useful external references
 

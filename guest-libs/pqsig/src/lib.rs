@@ -1,9 +1,18 @@
 #![cfg_attr(target_os = "zkvm", no_std)]
 
+#[cfg(target_os = "zkvm")]
+extern crate alloc;
+
 pub use openvm_pqsig_guest::{LeanSigSchemeId as SchemeId, LeanSigVerifyRequest as VerifyRequest};
 use openvm_pqsig_guest::{LeanSigSchemeId, LEANSIG_MESSAGE_LENGTH};
 #[cfg(target_os = "zkvm")]
 use openvm_pqsig_guest::{LeanSigVerifyRequest, LEANSIG_VERIFY_REQUEST_LEN};
+use sha2::{Digest, Sha256};
+
+#[cfg(target_os = "zkvm")]
+use alloc::vec::Vec;
+#[cfg(not(target_os = "zkvm"))]
+use std::vec::Vec;
 
 #[cfg(any(test, feature = "software"))]
 pub mod software;
@@ -19,6 +28,21 @@ impl BatchVerificationResult {
     pub const fn all_valid(self) -> bool {
         self.first_invalid_index.is_none()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchVerificationStatement {
+    pub scheme: LeanSigSchemeId,
+    pub epoch: u32,
+    pub message: [u8; LEANSIG_MESSAGE_LENGTH],
+    pub signer_count: usize,
+    pub signer_set_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchVerificationOutcome {
+    pub result: BatchVerificationResult,
+    pub statement: Option<BatchVerificationStatement>,
 }
 
 #[inline(always)]
@@ -75,34 +99,90 @@ pub fn verify_leansig_batch_bytes_detailed(
     message: &[u8; LEANSIG_MESSAGE_LENGTH],
     batch: &[(&[u8], &[u8])],
 ) -> BatchVerificationResult {
+    verify_leansig_batch_bytes_with_statement(scheme, epoch, message, batch).result
+}
+
+#[inline(always)]
+pub fn verify_leansig_batch_bytes_with_statement(
+    scheme: LeanSigSchemeId,
+    epoch: u32,
+    message: &[u8; LEANSIG_MESSAGE_LENGTH],
+    batch: &[(&[u8], &[u8])],
+) -> BatchVerificationOutcome {
     if batch.is_empty() {
-        return BatchVerificationResult {
-            verified_count: 0,
-            first_invalid_index: Some(0),
+        return BatchVerificationOutcome {
+            result: BatchVerificationResult {
+                verified_count: 0,
+                first_invalid_index: Some(0),
+            },
+            statement: None,
         };
     }
 
-    #[cfg(not(target_os = "zkvm"))]
-    {
-        native::verify_leansig_batch_bytes_native(scheme, epoch, message, batch)
-    }
+    let result = {
+        #[cfg(not(target_os = "zkvm"))]
+        {
+            native::verify_leansig_batch_bytes_native(scheme, epoch, message, batch)
+        }
 
-    #[cfg(target_os = "zkvm")]
-    {
-        for (index, (public_key, signature)) in batch.iter().enumerate() {
-            if !verify_leansig_bytes(scheme, epoch, message, public_key, signature) {
-                return BatchVerificationResult {
-                    verified_count: index,
-                    first_invalid_index: Some(index),
-                };
+        #[cfg(target_os = "zkvm")]
+        {
+            let mut result = BatchVerificationResult {
+                verified_count: batch.len(),
+                first_invalid_index: None,
+            };
+
+            for (index, (public_key, signature)) in batch.iter().enumerate() {
+                if !verify_leansig_bytes(scheme, epoch, message, public_key, signature) {
+                    result = BatchVerificationResult {
+                        verified_count: index,
+                        first_invalid_index: Some(index),
+                    };
+                    break;
+                }
             }
-        }
 
-        BatchVerificationResult {
-            verified_count: batch.len(),
-            first_invalid_index: None,
+            result
         }
+    };
+
+    let statement = result
+        .first_invalid_index
+        .is_none()
+        .then(|| BatchVerificationStatement {
+            scheme,
+            epoch,
+            message: *message,
+            signer_count: count_unique_public_keys(batch),
+            signer_set_digest: hash_signer_set(batch),
+        });
+
+    BatchVerificationOutcome { result, statement }
+}
+
+fn count_unique_public_keys(batch: &[(&[u8], &[u8])]) -> usize {
+    dedup_sorted_public_keys(batch).len()
+}
+
+fn hash_signer_set(batch: &[(&[u8], &[u8])]) -> [u8; 32] {
+    let sorted = dedup_sorted_public_keys(batch);
+    let mut hasher = Sha256::new();
+    hasher.update((sorted.len() as u64).to_le_bytes());
+    for public_key in sorted {
+        hasher.update((public_key.len() as u64).to_le_bytes());
+        hasher.update(public_key);
     }
+    hasher.finalize().into()
+}
+
+fn dedup_sorted_public_keys<'a>(batch: &'a [(&'a [u8], &'a [u8])]) -> Vec<&'a [u8]> {
+    let mut public_keys = batch
+        .iter()
+        .map(|(public_key, _)| *public_key)
+        .collect::<Vec<_>>();
+    public_keys.sort_unstable();
+    public_keys.dedup();
+    public_keys
 }
 
 #[cfg(test)]
@@ -262,6 +342,55 @@ mod tests {
                 first_invalid_index: Some(1),
             }
         );
+    }
+
+    #[test]
+    fn batch_statement_is_order_independent_and_deduplicated() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let ordered = [
+            (&pk1[..], &sig1[..]),
+            (&pk2[..], &sig2[..]),
+            (&pk1[..], &sig1[..]),
+        ];
+        let reversed = [(&pk2[..], &sig2[..]), (&pk1[..], &sig1[..])];
+
+        let ordered_outcome = verify_leansig_batch_bytes_with_statement(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &ordered,
+        );
+        let reversed_outcome = verify_leansig_batch_bytes_with_statement(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &reversed,
+        );
+
+        assert_eq!(ordered_outcome.result.verified_count, 3);
+        assert_eq!(ordered_outcome.result.first_invalid_index, None);
+        assert_eq!(ordered_outcome.statement, reversed_outcome.statement);
+        assert_eq!(ordered_outcome.statement.unwrap().signer_count, 2);
+    }
+
+    #[test]
+    fn batch_statement_is_absent_for_invalid_batch() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, mut sig2, _, _) = sample_signature();
+        sig2[0] ^= 1;
+        let batch = [(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])];
+
+        let outcome = verify_leansig_batch_bytes_with_statement(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &batch,
+        );
+
+        assert_eq!(outcome.result.verified_count, 1);
+        assert_eq!(outcome.result.first_invalid_index, Some(1));
+        assert!(outcome.statement.is_none());
     }
 }
 

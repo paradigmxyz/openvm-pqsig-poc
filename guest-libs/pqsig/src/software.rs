@@ -606,7 +606,20 @@ fn poseidon_sponge<const WIDTH: usize, const OUT_LEN: usize>(
 
 #[cfg(test)]
 mod tests {
+    use leansig::{
+        inc_encoding::target_sum::TargetSumEncoding,
+        serialization::Serializable,
+        signature::{
+            generalized_xmss::GeneralizedXMSSSignatureScheme, SignatureScheme,
+            SignatureSchemeSecretKey,
+        },
+        symmetric::{
+            message_hash::poseidon::PoseidonMessageHash, prf::shake_to_field::ShakePRFtoF,
+            tweak_hash::poseidon::PoseidonTweakHash,
+        },
+    };
     use p3_field::PrimeField32;
+    use rand::{rngs::StdRng, SeedableRng};
 
     use super::{
         vectors::{
@@ -614,8 +627,29 @@ mod tests {
             TEST_TINY_B_EPOCH, TEST_TINY_B_MESSAGE, TEST_TINY_B_PK, TEST_TINY_B_SIG,
         },
         verify_tiny_poseidon_batch, verify_tiny_poseidon_batch_with_summary,
-        verify_tiny_poseidon_signature,
+        verify_tiny_poseidon_signature, MESSAGE_LEN,
     };
+
+    type TinyPrf = ShakePRFtoF<1, 1>;
+    type TinyTh = PoseidonTweakHash<1, 1, 2, 4, 31>;
+    type TinyMh = PoseidonMessageHash<1, 1, 1, 31, 2, 2, 9>;
+    type TinyIe = TargetSumEncoding<TinyMh, 15>;
+    type TinySig = GeneralizedXMSSSignatureScheme<TinyPrf, TinyIe, TinyTh, 4>;
+
+    fn sample_tiny_signature(seed: u64) -> (Vec<u8>, Vec<u8>, [u8; MESSAGE_LEN], u32) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let epoch = 3u32;
+        let message = [13u8; MESSAGE_LEN];
+        let (public_key, mut secret_key) =
+            TinySig::key_gen(&mut rng, 0, TinySig::LIFETIME as usize);
+        while !secret_key.get_prepared_interval().contains(&(epoch as u64)) {
+            secret_key.advance_preparation();
+        }
+        let signature = TinySig::sign(&secret_key, epoch, &message)
+            .expect("tiny leanSig-family signature should be creatable");
+
+        (public_key.to_bytes(), signature.to_bytes(), message, epoch)
+    }
 
     #[test]
     fn verifies_reference_vector() {
@@ -777,5 +811,53 @@ mod tests {
             &TEST_TINY_A_MESSAGE,
         )
         .is_none());
+    }
+
+    #[test]
+    fn verifies_batch_of_1k_real_signatures() {
+        let mut backing = Vec::with_capacity(1_000);
+        for seed in 0..1_000u64 {
+            backing.push(sample_tiny_signature(seed));
+        }
+
+        let epoch = backing[0].3;
+        let message = backing[0].2;
+        assert!(backing
+            .iter()
+            .all(|(_, _, candidate_message, candidate_epoch)| {
+                *candidate_epoch == epoch && *candidate_message == message
+            }));
+
+        let batch = backing
+            .iter()
+            .map(|(public_key, signature, _, _)| (&public_key[..], &signature[..]))
+            .collect::<Vec<_>>();
+
+        let summary = verify_tiny_poseidon_batch_with_summary(&batch, epoch, &message)
+            .expect("1k-signature batch should verify successfully");
+
+        assert_eq!(summary.signer_count, 1_000);
+        assert!(verify_tiny_poseidon_batch(&batch, epoch, &message));
+    }
+
+    #[test]
+    fn rejects_1k_batch_when_one_signature_is_tampered() {
+        let mut backing = Vec::with_capacity(1_000);
+        for seed in 0..1_000u64 {
+            backing.push(sample_tiny_signature(seed));
+        }
+
+        let epoch = backing[0].3;
+        let message = backing[0].2;
+        backing[999].1[64] ^= 1;
+
+        let batch = backing
+            .iter()
+            .map(|(public_key, signature, _, _)| (&public_key[..], &signature[..]))
+            .collect::<Vec<_>>();
+
+        assert!(verify_tiny_poseidon_batch_with_summary(&batch[..999], epoch, &message).is_some());
+        assert!(verify_tiny_poseidon_batch_with_summary(&batch, epoch, &message).is_none());
+        assert!(!verify_tiny_poseidon_batch(&batch, epoch, &message));
     }
 }

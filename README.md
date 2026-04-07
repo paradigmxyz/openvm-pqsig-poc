@@ -53,11 +53,25 @@ The `openvm-pqsig` library includes a real software verifier under the `software
 - It is not a mock or placeholder.
 - It verifies a deterministic XMSS/Poseidon signature generated from the same generic `leanSig` construction family.
 - It is kept small enough to unit test reliably on ordinary CI runners.
+- Its tiny batch path now rejects empty batches and can emit a real signer-set commitment via `verify_tiny_poseidon_batch_with_summary`.
+
+That batch summary is the strongest honest aggregation artifact in the repo right now:
+
+- it verifies every raw signature in the batch
+- it returns a stable signer count
+- it returns a real Poseidon-based commitment to the sorted, deduplicated signer set
 
 What is still missing is a proving-efficient path for larger `leanSig` instances inside OpenVM. The practical options are:
 
 1. build a real custom AIR/chip for the verifier path or a transpiler expansion into supported accelerated chips
 2. start with a simpler hash-based PQ scheme for the first fully proved aggregation pipeline, then grow back toward `leanSig`
+
+The current proving blocker is precise:
+
+- [`extensions/pqsig/circuit/src/lib.rs`](extensions/pqsig/circuit/src/lib.rs) still leaves both `VmCircuitExtension::extend_circuit` and `VmProverExtension::extend_prover` as no-ops for `PqSig`
+- that means proofs of the tiny verifier or tiny batch verifier still run through plain RV32 execution instead of a dedicated KoalaBear/Poseidon chip
+- a real run of the ignored tiny batch proof test retired about `5.1B` instructions across `544` segments, repeatedly hit the `4,194,304` trace-height ceiling and `1.2B`-cell segment cap, and was eventually `SIGKILL`ed during trace generation
+- the ignored proof tests in [`extensions/pqsig/circuit/tests/proved_tiny_poseidon.rs`](extensions/pqsig/circuit/tests/proved_tiny_poseidon.rs) mark that gap explicitly and stay out of CI until that proving path exists
 
 ## Aggregation roadmap
 
