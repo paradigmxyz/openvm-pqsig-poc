@@ -249,6 +249,15 @@ impl SignerSetWitness {
 }
 
 impl BatchVerificationStatement {
+    pub fn has_same_context_as(&self, other: &Self) -> bool {
+        self.scheme == other.scheme && self.epoch == other.epoch && self.message == other.message
+    }
+
+    pub fn matches_signer_set(&self, signer_set: &SignerSetWitness) -> bool {
+        self.signer_count == signer_set.signer_count()
+            && self.signer_set_digest == signer_set.digest()
+    }
+
     pub fn digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update([self.scheme as u8]);
@@ -284,6 +293,16 @@ impl RecursiveAggregationInput {
             Self::Envelope(envelope) => &envelope.signer_set,
         }
     }
+
+    fn digest(&self) -> [u8; 32] {
+        self.statement().digest()
+    }
+}
+
+impl BatchVerificationLeaf {
+    pub fn digest(&self) -> [u8; 32] {
+        self.statement.digest()
+    }
 }
 
 pub fn build_batch_verification_leaf(
@@ -317,21 +336,15 @@ pub fn build_recursive_aggregation_envelope(
         let statement = input.statement();
         let signer_set = input.signer_set();
 
-        if statement.scheme != first.statement().scheme
-            || statement.epoch != first.statement().epoch
-            || statement.message != first.statement().message
-        {
+        if !statement.has_same_context_as(first.statement()) {
             return None;
         }
-        if statement.signer_count != signer_set.signer_count() {
-            return None;
-        }
-        if statement.signer_set_digest != signer_set.digest() {
+        if !statement.matches_signer_set(signer_set) {
             return None;
         }
 
         child_statements.push(statement.clone());
-        child_statement_digests.push(statement.digest());
+        child_statement_digests.push(input.digest());
         union.extend(signer_set.public_keys.iter().cloned());
     }
 
