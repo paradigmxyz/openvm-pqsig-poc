@@ -1,14 +1,20 @@
 use core::array;
 
 use p3_field::{PrimeCharacteristicRing, PrimeField32, PrimeField64};
-use p3_koala_bear::{default_koalabear_poseidon1_16, default_koalabear_poseidon1_24, KoalaBear};
+use p3_koala_bear::{
+    default_koalabear_poseidon1_16, default_koalabear_poseidon1_24, KoalaBear, Poseidon1KoalaBear,
+};
 use p3_symmetric::CryptographicPermutation;
+#[cfg(not(target_os = "zkvm"))]
+use std::sync::OnceLock;
 
 pub mod vectors {
     include!("software_vectors.rs");
 }
 
 type F = KoalaBear;
+type Poseidon16 = Poseidon1KoalaBear<16>;
+type Poseidon24 = Poseidon1KoalaBear<24>;
 
 const MESSAGE_LEN: usize = 32;
 const DOMAIN_LEN: usize = 1;
@@ -70,7 +76,7 @@ pub fn verify_tiny_poseidon_signature(
     for (chain_index, chain_end) in chain_ends.iter_mut().enumerate() {
         let start = &signature.hashes[chain_index];
         let start_pos = codeword[chain_index];
-        let steps = 1usize.saturating_sub(start_pos as usize);
+        let steps = usize::from(start_pos == 0);
         *chain_end = walk_chain(
             &public_key.parameter,
             epoch,
@@ -135,15 +141,21 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
         .map(u32::from_le_bytes)
 }
 
+fn decode_fe(value: u32) -> Option<F> {
+    (value < F::ORDER_U32).then_some(F::new(value))
+}
+
 fn decode_fe_array<const N: usize>(bytes: &[u8]) -> Option<[F; N]> {
     if bytes.len() != N * 4 {
         return None;
     }
-    Some(array::from_fn(|i| {
+
+    let mut out = [F::ZERO; N];
+    for (i, item) in out.iter_mut().enumerate() {
         let start = i * 4;
-        let value = u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap());
-        F::new(value)
-    }))
+        *item = decode_fe(read_u32(bytes, start)?)?;
+    }
+    Some(out)
 }
 
 fn decode_domain_matrix<const N: usize>(bytes: &[u8]) -> Option<[[F; DOMAIN_LEN]; N]> {
@@ -189,7 +201,7 @@ fn message_hash(
         ..RANDOMNESS_LEN + PARAMETER_LEN + TWEAK_LEN + MESSAGE_LEN_FE]
         .copy_from_slice(&message_fe);
 
-    poseidon_compress::<24, MESSAGE_HASH_LEN>(&default_koalabear_poseidon1_24(), &input)
+    poseidon_compress::<24, MESSAGE_HASH_LEN>(&poseidon1_24(), &input)
 }
 
 fn encode_epoch(epoch: u32) -> [F; TWEAK_LEN] {
@@ -317,7 +329,7 @@ fn hash_one(
     state[..PARAMETER_LEN].copy_from_slice(parameter);
     state[PARAMETER_LEN..PARAMETER_LEN + TWEAK_LEN].copy_from_slice(tweak);
     state[PARAMETER_LEN + TWEAK_LEN..PARAMETER_LEN + TWEAK_LEN + DOMAIN_LEN].copy_from_slice(input);
-    poseidon_compress::<16, DOMAIN_LEN>(&default_koalabear_poseidon1_16(), &state)
+    poseidon_compress::<16, DOMAIN_LEN>(&poseidon1_16(), &state)
 }
 
 fn hash_pair(
@@ -332,7 +344,7 @@ fn hash_pair(
     state[PARAMETER_LEN + TWEAK_LEN..PARAMETER_LEN + TWEAK_LEN + DOMAIN_LEN].copy_from_slice(left);
     state[PARAMETER_LEN + TWEAK_LEN + DOMAIN_LEN..PARAMETER_LEN + TWEAK_LEN + 2 * DOMAIN_LEN]
         .copy_from_slice(right);
-    poseidon_compress::<24, DOMAIN_LEN>(&default_koalabear_poseidon1_24(), &state)
+    poseidon_compress::<24, DOMAIN_LEN>(&poseidon1_24(), &state)
 }
 
 fn hash_many(
@@ -349,14 +361,23 @@ fn hash_many(
     }
 
     let capacity = domain_separator();
-    poseidon_sponge::<24, DOMAIN_LEN>(
-        &default_koalabear_poseidon1_24(),
-        &capacity,
-        &combined_input,
-    )
+    poseidon_sponge::<24, DOMAIN_LEN>(&poseidon1_24(), &capacity, &combined_input)
 }
 
 fn domain_separator() -> [F; CAPACITY_LEN] {
+    #[cfg(not(target_os = "zkvm"))]
+    {
+        static DOMAIN_SEPARATOR: OnceLock<[F; CAPACITY_LEN]> = OnceLock::new();
+        return *DOMAIN_SEPARATOR.get_or_init(compute_domain_separator);
+    }
+
+    #[cfg(target_os = "zkvm")]
+    {
+        compute_domain_separator()
+    }
+}
+
+fn compute_domain_separator() -> [F; CAPACITY_LEN] {
     let lengths = [
         PARAMETER_LEN as u32,
         TWEAK_LEN as u32,
@@ -374,7 +395,29 @@ fn domain_separator() -> [F; CAPACITY_LEN] {
         F::from_u64(digit)
     });
 
-    poseidon_compress::<24, CAPACITY_LEN>(&default_koalabear_poseidon1_24(), &input)
+    poseidon_compress::<24, CAPACITY_LEN>(&poseidon1_24(), &input)
+}
+
+#[cfg(not(target_os = "zkvm"))]
+fn poseidon1_16() -> Poseidon16 {
+    static PERM: OnceLock<Poseidon16> = OnceLock::new();
+    PERM.get_or_init(default_koalabear_poseidon1_16).clone()
+}
+
+#[cfg(target_os = "zkvm")]
+fn poseidon1_16() -> Poseidon16 {
+    default_koalabear_poseidon1_16()
+}
+
+#[cfg(not(target_os = "zkvm"))]
+fn poseidon1_24() -> Poseidon24 {
+    static PERM: OnceLock<Poseidon24> = OnceLock::new();
+    PERM.get_or_init(default_koalabear_poseidon1_24).clone()
+}
+
+#[cfg(target_os = "zkvm")]
+fn poseidon1_24() -> Poseidon24 {
+    default_koalabear_poseidon1_24()
 }
 
 fn poseidon_compress<const WIDTH: usize, const OUT_LEN: usize>(
@@ -430,6 +473,8 @@ fn poseidon_sponge<const WIDTH: usize, const OUT_LEN: usize>(
 
 #[cfg(test)]
 mod tests {
+    use p3_field::PrimeField32;
+
     use super::{
         vectors::{TEST_TINY_EPOCH, TEST_TINY_MESSAGE, TEST_TINY_PK, TEST_TINY_SIG},
         verify_tiny_poseidon_signature,
@@ -449,6 +494,40 @@ mod tests {
     fn rejects_tampered_signature() {
         let mut tampered = TEST_TINY_SIG;
         tampered[64] ^= 1;
+        assert!(!verify_tiny_poseidon_signature(
+            &TEST_TINY_PK,
+            &tampered,
+            TEST_TINY_EPOCH,
+            &TEST_TINY_MESSAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_non_canonical_public_key_field_encoding() {
+        let mut tampered = TEST_TINY_PK;
+        tampered[..4].copy_from_slice(&super::F::ORDER_U32.to_le_bytes());
+        assert!(!verify_tiny_poseidon_signature(
+            &tampered,
+            &TEST_TINY_SIG,
+            TEST_TINY_EPOCH,
+            &TEST_TINY_MESSAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_out_of_range_epoch() {
+        assert!(!verify_tiny_poseidon_signature(
+            &TEST_TINY_PK,
+            &TEST_TINY_SIG,
+            1 << super::TREE_DEPTH,
+            &TEST_TINY_MESSAGE,
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_signature_offsets() {
+        let mut tampered = TEST_TINY_SIG;
+        tampered[..4].copy_from_slice(&0u32.to_le_bytes());
         assert!(!verify_tiny_poseidon_signature(
             &TEST_TINY_PK,
             &tampered,

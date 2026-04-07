@@ -18,6 +18,9 @@ p3-symmetric = { workspace = true }
 [target.'cfg(not(target_os = "zkvm"))'.dependencies]
 leansig = { workspace = true }
 
+[dev-dependencies]
+rand = { workspace = true }
+
 [features]
 default = []
 software = []

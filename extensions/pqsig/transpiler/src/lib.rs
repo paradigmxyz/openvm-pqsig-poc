@@ -6,6 +6,10 @@ use openvm_transpiler::{util::from_r_type, TranspilerExtension, TranspilerOutput
 use rrs_lib::instruction_formats::RType;
 use strum::{EnumCount, EnumIter, FromRepr};
 
+const LEANSIG_VERIFY_MASK: u32 = (0x7f << 25) | (0b111 << 12) | 0x7f;
+const LEANSIG_VERIFY_ENCODING: u32 =
+    ((LEANSIG_VERIFY_FUNCT7 as u32) << 25) | ((PQSIG_FUNCT3 as u32) << 12) | (OPCODE as u32);
+
 #[derive(
     Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, EnumCount, EnumIter, FromRepr, LocalOpcode,
 )]
@@ -20,23 +24,12 @@ pub struct PqSigTranspilerExtension;
 
 impl<F: PrimeField32> TranspilerExtension<F> for PqSigTranspilerExtension {
     fn process_custom(&self, instruction_stream: &[u32]) -> Option<TranspilerOutput<F>> {
-        if instruction_stream.is_empty() {
-            return None;
-        }
-
-        let instruction_u32 = instruction_stream[0];
-        let opcode = (instruction_u32 & 0x7f) as u8;
-        let funct3 = ((instruction_u32 >> 12) & 0b111) as u8;
-
-        if (opcode, funct3) != (OPCODE, PQSIG_FUNCT3) {
+        let &instruction_u32 = instruction_stream.first()?;
+        if instruction_u32 & LEANSIG_VERIFY_MASK != LEANSIG_VERIFY_ENCODING {
             return None;
         }
 
         let decoded = RType::new(instruction_u32);
-        if decoded.funct7 != LEANSIG_VERIFY_FUNCT7 as u32 {
-            return None;
-        }
-
         let instruction = from_r_type(
             Rv32PqSigOpcode::LeanSigVerify.global_opcode().as_usize(),
             RV32_MEMORY_AS as usize,
@@ -83,5 +76,30 @@ mod tests {
         assert_eq!(instruction.a.as_canonical_u32(), 40);
         assert_eq!(instruction.b.as_canonical_u32(), 44);
         assert_eq!(instruction.c.as_canonical_u32(), 48);
+    }
+
+    #[test]
+    fn rejects_empty_stream() {
+        let output: Option<TranspilerOutput<BabyBear>> =
+            PqSigTranspilerExtension.process_custom(&[]);
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn rejects_wrong_funct7() {
+        let word = encode_r_type(10, 11, 12) ^ (1 << 25);
+        let output = PqSigTranspilerExtension
+            .process_custom(&[word])
+            .map(|output: TranspilerOutput<BabyBear>| output);
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn rejects_wrong_opcode_prefix() {
+        let word = encode_r_type(10, 11, 12) ^ 0x1;
+        let output = PqSigTranspilerExtension
+            .process_custom(&[word])
+            .map(|output: TranspilerOutput<BabyBear>| output);
+        assert!(output.is_none());
     }
 }

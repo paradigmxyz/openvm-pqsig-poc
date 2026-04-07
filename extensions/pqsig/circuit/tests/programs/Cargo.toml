@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "openvm-pqsig-test-programs"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+openvm = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm", default-features = false }
+openvm-pqsig = { path = "../../../../../guest-libs/pqsig", default-features = false, features = ["software"] }
+
+[features]
+default = []
+std = ["openvm/std"]
+
+[profile.release]
+panic = "abort"
+lto = "thin"

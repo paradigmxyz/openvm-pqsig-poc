@@ -108,36 +108,50 @@ unsafe fn execute_e12_impl<F: PrimeField32, CTX: ExecutionCtxTrait>(
     let src_u32 = u32::from_le_bytes(src);
     let len_u32 = u32::from_le_bytes(len);
 
-    let request_bytes = exec_state.vm_read_slice(RV32_MEMORY_AS, src_u32, len_u32 as usize);
+    let memory = &exec_state.memory as *const GuestMemory;
+    exec_state
+        .ctx
+        .on_memory_operation(RV32_MEMORY_AS, src_u32, len_u32);
+    let request_bytes = (&*memory).get_slice(RV32_MEMORY_AS, src_u32, len_u32 as usize);
     let result = parse_request(request_bytes)
         .and_then(|request| {
             let scheme = LeanSigSchemeId::from_u32(request.scheme_id)?;
             let scheme: SchemeId = scheme;
-            let message: &[u8; LEANSIG_MESSAGE_LENGTH] = exec_state
-                .vm_read_slice(RV32_MEMORY_AS, request.message_ptr, LEANSIG_MESSAGE_LENGTH)
+            exec_state.ctx.on_memory_operation(
+                RV32_MEMORY_AS,
+                request.message_ptr,
+                LEANSIG_MESSAGE_LENGTH as u32,
+            );
+            let message: &[u8; LEANSIG_MESSAGE_LENGTH] = (&*memory)
+                .get_slice(RV32_MEMORY_AS, request.message_ptr, LEANSIG_MESSAGE_LENGTH)
                 .try_into()
                 .ok()?;
-            let message = *message;
-            let public_key = exec_state
-                .vm_read_slice(
-                    RV32_MEMORY_AS,
-                    request.public_key_ptr,
-                    request.public_key_len as usize,
-                )
-                .to_vec();
-            let signature = exec_state
-                .vm_read_slice(
-                    RV32_MEMORY_AS,
-                    request.signature_ptr,
-                    request.signature_len as usize,
-                )
-                .to_vec();
+            exec_state.ctx.on_memory_operation(
+                RV32_MEMORY_AS,
+                request.public_key_ptr,
+                request.public_key_len,
+            );
+            let public_key = (&*memory).get_slice(
+                RV32_MEMORY_AS,
+                request.public_key_ptr,
+                request.public_key_len as usize,
+            );
+            exec_state.ctx.on_memory_operation(
+                RV32_MEMORY_AS,
+                request.signature_ptr,
+                request.signature_len,
+            );
+            let signature = (&*memory).get_slice(
+                RV32_MEMORY_AS,
+                request.signature_ptr,
+                request.signature_len as usize,
+            );
             Some(verify_leansig_bytes(
                 scheme,
                 request.epoch,
-                &message,
-                &public_key,
-                &signature,
+                message,
+                public_key,
+                signature,
             ))
         })
         .unwrap_or(false);
@@ -279,7 +293,12 @@ mod tests {
         (public_key.to_bytes(), signature.to_bytes(), message, epoch)
     }
 
-    fn run_verification(message: [u8; 32], tamper_signature: bool) -> bool {
+    fn run_verification(
+        message: [u8; 32],
+        tamper_signature: bool,
+        scheme_id: u32,
+        request_len: u32,
+    ) -> bool {
         let (public_key, mut signature, signed_message, epoch) = sample_signature();
         let message = if message == [0u8; 32] {
             signed_message
@@ -297,7 +316,7 @@ mod tests {
         let output_ptr = 0x1000;
 
         let request = LeanSigVerifyRequest {
-            scheme_id: LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8 as u32,
+            scheme_id,
             epoch,
             message_ptr,
             public_key_ptr,
@@ -305,6 +324,7 @@ mod tests {
             signature_ptr,
             signature_len: signature.len() as u32,
         };
+        let request_bytes = request.to_le_bytes();
 
         let custom_instruction = PqSigTranspilerExtension
             .process_custom(&[encode_r_type(10, 11, 12)])
@@ -321,12 +341,12 @@ mod tests {
         ]);
 
         let mut init_memory = BTreeMap::new();
-        write_bytes(&mut init_memory, RV32_MEMORY_AS, request_ptr, unsafe {
-            std::slice::from_raw_parts(
-                (&request as *const LeanSigVerifyRequest).cast::<u8>(),
-                LEANSIG_VERIFY_REQUEST_LEN,
-            )
-        });
+        write_bytes(
+            &mut init_memory,
+            RV32_MEMORY_AS,
+            request_ptr,
+            &request_bytes,
+        );
         write_bytes(&mut init_memory, RV32_MEMORY_AS, message_ptr, &message);
         write_bytes(
             &mut init_memory,
@@ -337,12 +357,7 @@ mod tests {
         write_bytes(&mut init_memory, RV32_MEMORY_AS, signature_ptr, &signature);
         write_u32(&mut init_memory, RV32_REGISTER_AS, 4 * 10, output_ptr);
         write_u32(&mut init_memory, RV32_REGISTER_AS, 4 * 11, request_ptr);
-        write_u32(
-            &mut init_memory,
-            RV32_REGISTER_AS,
-            4 * 12,
-            LEANSIG_VERIFY_REQUEST_LEN as u32,
-        );
+        write_u32(&mut init_memory, RV32_REGISTER_AS, 4 * 12, request_len);
 
         let executor = VmExecutor::<BabyBear, _>::new(PqSigRv32Config::default())
             .expect("executor config should be valid");
@@ -359,8 +374,18 @@ mod tests {
 
     #[test]
     fn executes_leansig_verification_and_rejects_tampering() {
-        assert!(run_verification([0u8; 32], false));
-        assert!(!run_verification([9u8; 32], false));
-        assert!(!run_verification([0u8; 32], true));
+        let scheme = LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8 as u32;
+        let request_len = LEANSIG_VERIFY_REQUEST_LEN as u32;
+
+        assert!(run_verification([0u8; 32], false, scheme, request_len));
+        assert!(!run_verification([9u8; 32], false, scheme, request_len));
+        assert!(!run_verification([0u8; 32], true, scheme, request_len));
+        assert!(!run_verification([0u8; 32], false, u32::MAX, request_len));
+        assert!(!run_verification(
+            [0u8; 32],
+            false,
+            scheme,
+            (LEANSIG_VERIFY_REQUEST_LEN - 4) as u32,
+        ));
     }
 }

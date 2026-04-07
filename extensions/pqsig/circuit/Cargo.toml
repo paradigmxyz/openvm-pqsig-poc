@@ -23,7 +23,10 @@ strum = { workspace = true }
 
 [dev-dependencies]
 leansig = { workspace = true }
+openvm-circuit = { workspace = true, features = ["test-utils"] }
 openvm-transpiler = { workspace = true }
+openvm-toolchain-tests = { workspace = true }
+openvm-rv32im-transpiler = { workspace = true }
 rand = "0.10"
 
 [features]

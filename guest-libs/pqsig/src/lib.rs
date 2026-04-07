@@ -31,20 +31,82 @@ pub fn verify_leansig_bytes(
             public_key_len: public_key_ssz.len() as u32,
             signature_ptr: signature_ssz.as_ptr() as usize as u32,
             signature_len: signature_ssz.len() as u32,
-        };
+        }
+        .to_le_bytes();
         let mut output = [0u8; 4];
 
-        debug_assert_eq!(
-            core::mem::size_of::<LeanSigVerifyRequest>(),
-            LEANSIG_VERIFY_REQUEST_LEN
-        );
         openvm_pqsig_guest::zkvm_leansig_verify_impl(
-            (&request as *const LeanSigVerifyRequest).cast::<u8>(),
+            request.as_ptr(),
             LEANSIG_VERIFY_REQUEST_LEN,
             output.as_mut_ptr(),
         );
 
         u32::from_le_bytes(output) != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use leansig::{
+        serialization::Serializable,
+        signature::{
+            generalized_xmss::instantiations_aborting::lifetime_2_to_the_6::SIGAbortingTargetSumLifetime6Dim46Base8,
+            SignatureScheme, SignatureSchemeSecretKey,
+        },
+    };
+
+    use super::*;
+
+    fn sample_signature() -> (Vec<u8>, Vec<u8>, [u8; LEANSIG_MESSAGE_LENGTH], u32) {
+        let mut rng = rand::rng();
+        let epoch = 2;
+        let message = [7u8; LEANSIG_MESSAGE_LENGTH];
+        let (public_key, mut secret_key) = SIGAbortingTargetSumLifetime6Dim46Base8::key_gen(
+            &mut rng,
+            0,
+            SIGAbortingTargetSumLifetime6Dim46Base8::LIFETIME as usize,
+        );
+        while !secret_key.get_prepared_interval().contains(&(epoch as u64)) {
+            secret_key.advance_preparation();
+        }
+        let signature = SIGAbortingTargetSumLifetime6Dim46Base8::sign(&secret_key, epoch, &message)
+            .expect("sample signature should sign successfully");
+
+        (public_key.to_bytes(), signature.to_bytes(), message, epoch)
+    }
+
+    #[test]
+    fn native_verifier_accepts_real_signature_and_rejects_tampering() {
+        let (public_key, mut signature, message, epoch) = sample_signature();
+        assert!(verify_leansig_bytes(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &public_key,
+            &signature,
+        ));
+
+        signature[0] ^= 1;
+        assert!(!verify_leansig_bytes(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &public_key,
+            &signature,
+        ));
+    }
+
+    #[test]
+    fn native_verifier_rejects_malformed_serialization_for_all_schemes() {
+        for scheme in LeanSigSchemeId::ALL {
+            assert!(!verify_leansig_bytes(
+                scheme,
+                0,
+                &[0u8; LEANSIG_MESSAGE_LENGTH],
+                &[1, 2, 3],
+                &[4, 5, 6],
+            ));
+        }
     }
 }
 
