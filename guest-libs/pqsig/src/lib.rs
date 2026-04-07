@@ -62,6 +62,19 @@ pub struct RecursiveAggregationNode {
     pub child_statement_digests: Vec<[u8; 32]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveAggregationEnvelope {
+    pub node: RecursiveAggregationNode,
+    pub signer_set: SignerSetWitness,
+    pub child_statements: Vec<BatchVerificationStatement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecursiveAggregationInput {
+    Leaf(BatchVerificationLeaf),
+    Envelope(RecursiveAggregationEnvelope),
+}
+
 #[inline(always)]
 pub fn verify_leansig_bytes(
     scheme: LeanSigSchemeId,
@@ -247,6 +260,32 @@ impl BatchVerificationStatement {
     }
 }
 
+impl RecursiveAggregationEnvelope {
+    pub fn statement(&self) -> &BatchVerificationStatement {
+        &self.node.statement
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        self.statement().digest()
+    }
+}
+
+impl RecursiveAggregationInput {
+    fn statement(&self) -> &BatchVerificationStatement {
+        match self {
+            Self::Leaf(leaf) => &leaf.statement,
+            Self::Envelope(envelope) => envelope.statement(),
+        }
+    }
+
+    fn signer_set(&self) -> &SignerSetWitness {
+        match self {
+            Self::Leaf(leaf) => &leaf.signer_set,
+            Self::Envelope(envelope) => &envelope.signer_set,
+        }
+    }
+}
+
 pub fn build_batch_verification_leaf(
     scheme: LeanSigSchemeId,
     epoch: u32,
@@ -262,46 +301,66 @@ pub fn build_batch_verification_leaf(
     })
 }
 
-pub fn aggregate_batch_verification_leaves(
-    leaves: &[BatchVerificationLeaf],
-) -> Option<RecursiveAggregationNode> {
-    if leaves.is_empty() {
+pub fn build_recursive_aggregation_envelope(
+    inputs: &[RecursiveAggregationInput],
+) -> Option<RecursiveAggregationEnvelope> {
+    if inputs.is_empty() {
         return None;
     }
 
-    let first = leaves.first()?;
+    let first = inputs.first()?;
     let mut union = Vec::<Vec<u8>>::new();
-    let mut child_statement_digests = Vec::with_capacity(leaves.len());
+    let mut child_statements = Vec::with_capacity(inputs.len());
+    let mut child_statement_digests = Vec::with_capacity(inputs.len());
 
-    for leaf in leaves {
-        if leaf.statement.scheme != first.statement.scheme
-            || leaf.statement.epoch != first.statement.epoch
-            || leaf.statement.message != first.statement.message
+    for input in inputs {
+        let statement = input.statement();
+        let signer_set = input.signer_set();
+
+        if statement.scheme != first.statement().scheme
+            || statement.epoch != first.statement().epoch
+            || statement.message != first.statement().message
         {
             return None;
         }
-        if leaf.statement.signer_count != leaf.signer_set.signer_count() {
+        if statement.signer_count != signer_set.signer_count() {
             return None;
         }
-        if leaf.statement.signer_set_digest != leaf.signer_set.digest() {
+        if statement.signer_set_digest != signer_set.digest() {
             return None;
         }
 
-        child_statement_digests.push(leaf.statement.digest());
-        union.extend(leaf.signer_set.public_keys.iter().cloned());
+        child_statements.push(statement.clone());
+        child_statement_digests.push(statement.digest());
+        union.extend(signer_set.public_keys.iter().cloned());
     }
 
     let signer_set = SignerSetWitness::new(union);
-    Some(RecursiveAggregationNode {
-        statement: BatchVerificationStatement {
-            scheme: first.statement.scheme,
-            epoch: first.statement.epoch,
-            message: first.statement.message,
-            signer_count: signer_set.signer_count(),
-            signer_set_digest: signer_set.digest(),
+    Some(RecursiveAggregationEnvelope {
+        node: RecursiveAggregationNode {
+            statement: BatchVerificationStatement {
+                scheme: first.statement().scheme,
+                epoch: first.statement().epoch,
+                message: first.statement().message,
+                signer_count: signer_set.signer_count(),
+                signer_set_digest: signer_set.digest(),
+            },
+            child_statement_digests,
         },
-        child_statement_digests,
+        signer_set,
+        child_statements,
     })
+}
+
+pub fn aggregate_batch_verification_leaves(
+    leaves: &[BatchVerificationLeaf],
+) -> Option<RecursiveAggregationNode> {
+    let inputs = leaves
+        .iter()
+        .cloned()
+        .map(RecursiveAggregationInput::Leaf)
+        .collect::<Vec<_>>();
+    Some(build_recursive_aggregation_envelope(&inputs)?.node)
 }
 
 #[cfg(test)]
@@ -567,6 +626,58 @@ mod tests {
     }
 
     #[test]
+    fn builds_recursive_envelope_from_mixed_inputs() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let (pk3, sig3, _, _) = sample_signature();
+        let (pk4, sig4, _, _) = sample_signature();
+
+        let leaf_a = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])],
+        )
+        .expect("first leaf should build");
+        let leaf_b = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk2[..], &sig2[..]), (&pk3[..], &sig3[..])],
+        )
+        .expect("second leaf should build");
+        let parent = build_recursive_aggregation_envelope(&[
+            RecursiveAggregationInput::Leaf(leaf_a.clone()),
+            RecursiveAggregationInput::Leaf(leaf_b.clone()),
+        ])
+        .expect("parent envelope should build");
+        let leaf_c = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk3[..], &sig3[..]), (&pk4[..], &sig4[..])],
+        )
+        .expect("third leaf should build");
+
+        let root = build_recursive_aggregation_envelope(&[
+            RecursiveAggregationInput::Envelope(parent.clone()),
+            RecursiveAggregationInput::Leaf(leaf_c.clone()),
+        ])
+        .expect("root envelope should build");
+
+        assert_eq!(parent.statement().signer_count, 3);
+        assert_eq!(parent.child_statements.len(), 2);
+        assert_eq!(parent.node.child_statement_digests.len(), 2);
+        assert_eq!(root.statement().signer_count, 4);
+        assert_eq!(root.child_statements.len(), 2);
+        assert_eq!(root.node.child_statement_digests.len(), 2);
+        assert_eq!(
+            root.node.child_statement_digests,
+            vec![parent.digest(), leaf_c.statement.digest()]
+        );
+    }
+
+    #[test]
     fn rejects_aggregation_when_leaf_context_mismatches() {
         let (pk1, sig1, message, epoch) = sample_signature();
         let (pk2, sig2, _, _) = sample_signature();
@@ -587,6 +698,25 @@ mod tests {
         right.statement.epoch += 1;
 
         assert!(aggregate_batch_verification_leaves(&[left, right]).is_none());
+    }
+
+    #[test]
+    fn rejects_recursive_envelope_when_child_witness_is_inconsistent() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let mut leaf = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])],
+        )
+        .expect("leaf should build");
+        leaf.signer_set.public_keys.reverse();
+
+        assert!(
+            build_recursive_aggregation_envelope(&[RecursiveAggregationInput::Leaf(leaf)])
+                .is_none()
+        );
     }
 }
 
