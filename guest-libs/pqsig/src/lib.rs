@@ -17,6 +17,12 @@ use std::vec::Vec;
 #[cfg(any(test, feature = "software"))]
 pub mod software;
 
+const SERIALIZED_SCHEME_BYTES: usize = 4;
+const SERIALIZED_EPOCH_BYTES: usize = 4;
+const SERIALIZED_SIGNER_COUNT_BYTES: usize = 8;
+const SERIALIZED_DIGEST_BYTES: usize = 32;
+const SERIALIZED_LEN_PREFIX_BYTES: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchVerificationResult {
     pub verified_count: usize,
@@ -73,6 +79,65 @@ pub struct RecursiveAggregationEnvelope {
 pub enum RecursiveAggregationInput {
     Leaf(BatchVerificationLeaf),
     Envelope(RecursiveAggregationEnvelope),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregationDecodeError {
+    UnexpectedEof,
+    InvalidLength,
+    InvalidScheme,
+    InvalidSignerCount,
+    NonCanonicalSignerSet,
+    InvalidEnvelope,
+    TrailingBytes,
+}
+
+struct ByteCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], AggregationDecodeError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(AggregationDecodeError::InvalidLength)?;
+        let slice = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(AggregationDecodeError::UnexpectedEof)?;
+        self.offset = end;
+        Ok(slice)
+    }
+
+    fn read_u32(&mut self) -> Result<u32, AggregationDecodeError> {
+        Ok(u32::from_le_bytes(
+            self.read_exact(SERIALIZED_LEN_PREFIX_BYTES)?
+                .try_into()
+                .map_err(|_| AggregationDecodeError::InvalidLength)?,
+        ))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, AggregationDecodeError> {
+        Ok(u64::from_le_bytes(
+            self.read_exact(SERIALIZED_SIGNER_COUNT_BYTES)?
+                .try_into()
+                .map_err(|_| AggregationDecodeError::InvalidLength)?,
+        ))
+    }
+
+    fn finish(self) -> Result<(), AggregationDecodeError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(AggregationDecodeError::TrailingBytes)
+        }
+    }
 }
 
 #[inline(always)]
@@ -246,9 +311,47 @@ impl SignerSetWitness {
             .collect::<Vec<_>>();
         hash_sorted_public_keys(&refs)
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.public_keys.len() as u32).to_le_bytes());
+        for public_key in &self.public_keys {
+            out.extend_from_slice(&(public_key.len() as u32).to_le_bytes());
+            out.extend_from_slice(public_key);
+        }
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AggregationDecodeError> {
+        let mut cursor = ByteCursor::new(bytes);
+        let count = usize::try_from(cursor.read_u32()?)
+            .map_err(|_| AggregationDecodeError::InvalidLength)?;
+        let mut public_keys = Vec::with_capacity(count);
+        let mut previous: Option<Vec<u8>> = None;
+
+        for _ in 0..count {
+            let key_len = usize::try_from(cursor.read_u32()?)
+                .map_err(|_| AggregationDecodeError::InvalidLength)?;
+            let key = cursor.read_exact(key_len)?.to_vec();
+            if previous.as_ref().is_some_and(|prev| prev >= &key) {
+                return Err(AggregationDecodeError::NonCanonicalSignerSet);
+            }
+            previous = Some(key.clone());
+            public_keys.push(key);
+        }
+        cursor.finish()?;
+
+        Ok(Self { public_keys })
+    }
 }
 
 impl BatchVerificationStatement {
+    pub const SERIALIZED_LEN: usize = SERIALIZED_SCHEME_BYTES
+        + SERIALIZED_EPOCH_BYTES
+        + LEANSIG_MESSAGE_LENGTH
+        + SERIALIZED_SIGNER_COUNT_BYTES
+        + SERIALIZED_DIGEST_BYTES;
+
     pub fn has_same_context_as(&self, other: &Self) -> bool {
         self.scheme == other.scheme && self.epoch == other.epoch && self.message == other.message
     }
@@ -267,6 +370,46 @@ impl BatchVerificationStatement {
         hasher.update(self.signer_set_digest);
         hasher.finalize().into()
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::SERIALIZED_LEN);
+        out.extend_from_slice(&(self.scheme as u32).to_le_bytes());
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&self.message);
+        out.extend_from_slice(&(self.signer_count as u64).to_le_bytes());
+        out.extend_from_slice(&self.signer_set_digest);
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AggregationDecodeError> {
+        if bytes.len() != Self::SERIALIZED_LEN {
+            return Err(AggregationDecodeError::InvalidLength);
+        }
+
+        let mut cursor = ByteCursor::new(bytes);
+        let scheme = LeanSigSchemeId::from_u32(cursor.read_u32()?)
+            .ok_or(AggregationDecodeError::InvalidScheme)?;
+        let epoch = cursor.read_u32()?;
+        let message: [u8; LEANSIG_MESSAGE_LENGTH] = cursor
+            .read_exact(LEANSIG_MESSAGE_LENGTH)?
+            .try_into()
+            .map_err(|_| AggregationDecodeError::InvalidLength)?;
+        let signer_count = usize::try_from(cursor.read_u64()?)
+            .map_err(|_| AggregationDecodeError::InvalidSignerCount)?;
+        let signer_set_digest: [u8; SERIALIZED_DIGEST_BYTES] = cursor
+            .read_exact(SERIALIZED_DIGEST_BYTES)?
+            .try_into()
+            .map_err(|_| AggregationDecodeError::InvalidLength)?;
+        cursor.finish()?;
+
+        Ok(Self {
+            scheme,
+            epoch,
+            message,
+            signer_count,
+            signer_set_digest,
+        })
+    }
 }
 
 impl RecursiveAggregationEnvelope {
@@ -276,6 +419,70 @@ impl RecursiveAggregationEnvelope {
 
     pub fn digest(&self) -> [u8; 32] {
         self.statement().digest()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let signer_set_bytes = self.signer_set.to_bytes();
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.statement().to_bytes());
+        out.extend_from_slice(&(signer_set_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&signer_set_bytes);
+        out.extend_from_slice(&(self.child_statements.len() as u32).to_le_bytes());
+        for statement in &self.child_statements {
+            out.extend_from_slice(&statement.to_bytes());
+        }
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AggregationDecodeError> {
+        let mut cursor = ByteCursor::new(bytes);
+        let statement = BatchVerificationStatement::from_bytes(
+            cursor.read_exact(BatchVerificationStatement::SERIALIZED_LEN)?,
+        )?;
+        let signer_set_len = usize::try_from(cursor.read_u32()?)
+            .map_err(|_| AggregationDecodeError::InvalidLength)?;
+        let signer_set = SignerSetWitness::from_bytes(cursor.read_exact(signer_set_len)?)?;
+        let child_count = usize::try_from(cursor.read_u32()?)
+            .map_err(|_| AggregationDecodeError::InvalidLength)?;
+        let mut child_statements = Vec::with_capacity(child_count);
+        for _ in 0..child_count {
+            child_statements.push(BatchVerificationStatement::from_bytes(
+                cursor.read_exact(BatchVerificationStatement::SERIALIZED_LEN)?,
+            )?);
+        }
+        cursor.finish()?;
+
+        let envelope = Self {
+            node: RecursiveAggregationNode {
+                statement,
+                child_statement_digests: child_statements
+                    .iter()
+                    .map(BatchVerificationStatement::digest)
+                    .collect(),
+            },
+            signer_set,
+            child_statements,
+        };
+
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    fn validate(&self) -> Result<(), AggregationDecodeError> {
+        if !self.statement().matches_signer_set(&self.signer_set) {
+            return Err(AggregationDecodeError::InvalidEnvelope);
+        }
+        if self.child_statements.is_empty() {
+            return Err(AggregationDecodeError::InvalidEnvelope);
+        }
+        if self
+            .child_statements
+            .iter()
+            .any(|statement| !statement.has_same_context_as(self.statement()))
+        {
+            return Err(AggregationDecodeError::InvalidEnvelope);
+        }
+        Ok(())
     }
 }
 
@@ -691,6 +898,100 @@ mod tests {
     }
 
     #[test]
+    fn statement_round_trips_through_bytes() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let leaf = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..])],
+        )
+        .expect("leaf should build");
+
+        let bytes = leaf.statement.to_bytes();
+        let decoded =
+            BatchVerificationStatement::from_bytes(&bytes).expect("statement should round-trip");
+        assert_eq!(decoded, leaf.statement);
+    }
+
+    #[test]
+    fn signer_set_round_trips_through_bytes() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let leaf = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[
+                (&pk1[..], &sig1[..]),
+                (&pk2[..], &sig2[..]),
+                (&pk1[..], &sig1[..]),
+            ],
+        )
+        .expect("leaf should build");
+
+        let bytes = leaf.signer_set.to_bytes();
+        let decoded = SignerSetWitness::from_bytes(&bytes).expect("signer set should round-trip");
+        assert_eq!(decoded, leaf.signer_set);
+    }
+
+    #[test]
+    fn recursive_envelope_round_trips_through_bytes() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let (pk3, sig3, _, _) = sample_signature();
+
+        let left = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..])],
+        )
+        .expect("left leaf should build");
+        let right = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk2[..], &sig2[..]), (&pk3[..], &sig3[..])],
+        )
+        .expect("right leaf should build");
+        let envelope = build_recursive_aggregation_envelope(&[
+            RecursiveAggregationInput::Leaf(left),
+            RecursiveAggregationInput::Leaf(right),
+        ])
+        .expect("envelope should build");
+
+        let bytes = envelope.to_bytes();
+        let decoded =
+            RecursiveAggregationEnvelope::from_bytes(&bytes).expect("envelope should round-trip");
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn recursive_envelope_rejects_tampered_signer_set_digest() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let leaf = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..])],
+        )
+        .expect("leaf should build");
+        let envelope =
+            build_recursive_aggregation_envelope(&[RecursiveAggregationInput::Leaf(leaf)])
+                .expect("envelope should build");
+
+        let mut bytes = envelope.to_bytes();
+        let digest_offset = BatchVerificationStatement::SERIALIZED_LEN - SERIALIZED_DIGEST_BYTES;
+        bytes[digest_offset] ^= 1;
+
+        assert_eq!(
+            RecursiveAggregationEnvelope::from_bytes(&bytes),
+            Err(AggregationDecodeError::InvalidEnvelope)
+        );
+    }
+
+    #[test]
     fn rejects_aggregation_when_leaf_context_mismatches() {
         let (pk1, sig1, message, epoch) = sample_signature();
         let (pk2, sig2, _, _) = sample_signature();
@@ -729,6 +1030,21 @@ mod tests {
         assert!(
             build_recursive_aggregation_envelope(&[RecursiveAggregationInput::Leaf(leaf)])
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn signer_set_rejects_non_canonical_encoding() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(b"bb");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(b"aa");
+
+        assert_eq!(
+            SignerSetWitness::from_bytes(&bytes),
+            Err(AggregationDecodeError::NonCanonicalSignerSet)
         );
     }
 }
