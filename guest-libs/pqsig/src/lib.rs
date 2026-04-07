@@ -5,6 +5,9 @@ use openvm_pqsig_guest::{LeanSigSchemeId, LEANSIG_MESSAGE_LENGTH};
 #[cfg(target_os = "zkvm")]
 use openvm_pqsig_guest::{LeanSigVerifyRequest, LEANSIG_VERIFY_REQUEST_LEN};
 
+#[cfg(any(test, feature = "software"))]
+pub mod software;
+
 #[inline(always)]
 pub fn verify_leansig_bytes(
     scheme: LeanSigSchemeId,

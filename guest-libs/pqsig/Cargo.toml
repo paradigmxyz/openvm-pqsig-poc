@@ -11,9 +11,13 @@ license.workspace = true
 
 [dependencies]
 openvm-pqsig-guest = { workspace = true }
+p3-field = { workspace = true }
+p3-koala-bear = { workspace = true }
+p3-symmetric = { workspace = true }
 
 [target.'cfg(not(target_os = "zkvm"))'.dependencies]
 leansig = { workspace = true }
 
 [features]
 default = []
+software = []

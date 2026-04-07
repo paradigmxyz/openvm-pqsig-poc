@@ -9,12 +9,14 @@ This repository provides:
 - a custom OpenVM guest instruction for `leanSig` verification
 - a transpiler extension for the custom opcode
 - a guest-facing Rust library with native fallback verification
+- a small real software verifier for a `leanSig`-compatible Poseidon/XMSS instantiation, with deterministic test vectors
 - an execution-only OpenVM extension and test harness
 
 Current limitation:
 
 - the `pqsig` opcode is wired for execution, but the proving-side AIR is still a placeholder
 - this is an integration PoC, not yet a sound proving extension for KoalaBear/Poseidon verification
+- a full OpenVM proof of the software `leanSig` verifier is not in CI yet: even tiny real Poseidon-based instantiations still blow through default runner budgets when interpreted through plain RV32 instructions
 
 ## Crates
 
@@ -43,6 +45,19 @@ The PoC currently supports these `leanSig` instantiations:
 cargo fmt --all
 cargo test --workspace --all-targets
 ```
+
+## Real Verifier Coverage
+
+The `openvm-pqsig` library includes a real software verifier under the `software` feature.
+
+- It is not a mock or placeholder.
+- It verifies a deterministic XMSS/Poseidon signature generated from the same generic `leanSig` construction family.
+- It is kept small enough to unit test reliably on ordinary CI runners.
+
+What is still missing is a proving-efficient path for larger `leanSig` instances inside OpenVM. The practical options are:
+
+1. build a real custom AIR/chip for the verifier path or a transpiler expansion into supported accelerated chips
+2. start with a simpler hash-based PQ scheme for the first fully proved aggregation pipeline, then grow back toward `leanSig`
 
 ## Aggregation roadmap
 

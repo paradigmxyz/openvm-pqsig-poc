@@ -18,6 +18,13 @@ Why it matters here:
 
 ## Practical aggregation directions
 
+One important design takeaway from the STARK aggregation literature is that simple hash-based signatures are often better aggregation targets than more optimized many-time schemes. The reason is that in proof-based aggregation, verifier hash count dominates, while raw signature size is only witness data.
+
+That creates a useful split for this repo:
+
+- `leanSig` remains the compatibility target and long-term integration goal
+- simpler schemes like Lamport, WOTS, or small XMSS-style gadgets may be the right first fully proved aggregation pipeline inside OpenVM
+
 ### 1. Recursive signature tree
 
 Inspired by `leanMultisig`:

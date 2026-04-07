@@ -20,17 +20,23 @@ resolver = "2"
 openvm-stark-backend = { git = "https://github.com/openvm-org/stark-backend.git", tag = "v1.3.0", default-features = false }
 openvm-stark-sdk = { git = "https://github.com/openvm-org/stark-backend.git", tag = "v1.3.0", default-features = false }
 openvm-platform = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-platform", default-features = false }
+openvm = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm", default-features = false }
 openvm-instructions = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-instructions", default-features = false }
 openvm-instructions-derive = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-instructions-derive", default-features = false }
 openvm-transpiler = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-transpiler", default-features = false }
+openvm-toolchain-tests = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-toolchain-tests", default-features = false }
 openvm-circuit = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-circuit", default-features = false }
 openvm-circuit-derive = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-circuit-derive", default-features = false }
 openvm-rv32im-circuit = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-rv32im-circuit", default-features = false }
+openvm-rv32im-transpiler = { git = "https://github.com/openvm-org/openvm.git", tag = "v1.5.0", package = "openvm-rv32im-transpiler", default-features = false }
 openvm-pqsig-guest = { path = "extensions/pqsig/guest", default-features = false }
 openvm-pqsig-transpiler = { path = "extensions/pqsig/transpiler", default-features = false }
 openvm-pqsig-circuit = { path = "extensions/pqsig/circuit", default-features = false }
 openvm-pqsig = { path = "guest-libs/pqsig", default-features = false }
 leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "9d37fa9a6aa25660b9f353972f7e6c9191aa65d3" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "b4dcde46", default-features = false }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3.git", rev = "b4dcde46", default-features = false }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "b4dcde46", default-features = false }
 
 derive-new = "0.6.0"
 derive_more = { version = "1.0.0", default-features = false }

@@ -6,9 +6,7 @@ use openvm_instructions::{
     LocalOpcode,
 };
 use openvm_pqsig::{verify_leansig_bytes, SchemeId};
-use openvm_pqsig_guest::{
-    LeanSigSchemeId, LeanSigVerifyRequest, LEANSIG_MESSAGE_LENGTH, LEANSIG_VERIFY_REQUEST_LEN,
-};
+use openvm_pqsig_guest::{LeanSigSchemeId, LeanSigVerifyRequest, LEANSIG_MESSAGE_LENGTH};
 use openvm_pqsig_transpiler::Rv32PqSigOpcode;
 use openvm_stark_backend::p3_field::PrimeField32;
 
