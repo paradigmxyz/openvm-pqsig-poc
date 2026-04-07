@@ -45,6 +45,23 @@ pub struct BatchVerificationOutcome {
     pub statement: Option<BatchVerificationStatement>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerSetWitness {
+    pub public_keys: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchVerificationLeaf {
+    pub statement: BatchVerificationStatement,
+    pub signer_set: SignerSetWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveAggregationNode {
+    pub statement: BatchVerificationStatement,
+    pub child_statement_digests: Vec<[u8; 32]>,
+}
+
 #[inline(always)]
 pub fn verify_leansig_bytes(
     scheme: LeanSigSchemeId,
@@ -166,6 +183,10 @@ fn count_unique_public_keys(batch: &[(&[u8], &[u8])]) -> usize {
 
 fn hash_signer_set(batch: &[(&[u8], &[u8])]) -> [u8; 32] {
     let sorted = dedup_sorted_public_keys(batch);
+    hash_sorted_public_keys(&sorted)
+}
+
+fn hash_sorted_public_keys(sorted: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update((sorted.len() as u64).to_le_bytes());
     for public_key in sorted {
@@ -183,6 +204,104 @@ fn dedup_sorted_public_keys<'a>(batch: &'a [(&'a [u8], &'a [u8])]) -> Vec<&'a [u
     public_keys.sort_unstable();
     public_keys.dedup();
     public_keys
+}
+
+impl SignerSetWitness {
+    pub fn new(mut public_keys: Vec<Vec<u8>>) -> Self {
+        public_keys.sort_unstable();
+        public_keys.dedup();
+        Self { public_keys }
+    }
+
+    pub fn from_batch(batch: &[(&[u8], &[u8])]) -> Self {
+        let public_keys = dedup_sorted_public_keys(batch)
+            .into_iter()
+            .map(|public_key| public_key.to_vec())
+            .collect();
+        Self { public_keys }
+    }
+
+    pub fn signer_count(&self) -> usize {
+        self.public_keys.len()
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        let refs = self
+            .public_keys
+            .iter()
+            .map(|public_key| public_key.as_slice())
+            .collect::<Vec<_>>();
+        hash_sorted_public_keys(&refs)
+    }
+}
+
+impl BatchVerificationStatement {
+    pub fn digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update([self.scheme as u8]);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.message);
+        hasher.update((self.signer_count as u64).to_le_bytes());
+        hasher.update(self.signer_set_digest);
+        hasher.finalize().into()
+    }
+}
+
+pub fn build_batch_verification_leaf(
+    scheme: LeanSigSchemeId,
+    epoch: u32,
+    message: &[u8; LEANSIG_MESSAGE_LENGTH],
+    batch: &[(&[u8], &[u8])],
+) -> Option<BatchVerificationLeaf> {
+    let signer_set = SignerSetWitness::from_batch(batch);
+    let outcome = verify_leansig_batch_bytes_with_statement(scheme, epoch, message, batch);
+    let statement = outcome.statement?;
+    Some(BatchVerificationLeaf {
+        statement,
+        signer_set,
+    })
+}
+
+pub fn aggregate_batch_verification_leaves(
+    leaves: &[BatchVerificationLeaf],
+) -> Option<RecursiveAggregationNode> {
+    if leaves.is_empty() {
+        return None;
+    }
+
+    let first = leaves.first()?;
+    let mut union = Vec::<Vec<u8>>::new();
+    let mut child_statement_digests = Vec::with_capacity(leaves.len());
+
+    for leaf in leaves {
+        if leaf.statement.scheme != first.statement.scheme
+            || leaf.statement.epoch != first.statement.epoch
+            || leaf.statement.message != first.statement.message
+        {
+            return None;
+        }
+        if leaf.statement.signer_count != leaf.signer_set.signer_count() {
+            return None;
+        }
+        if leaf.statement.signer_set_digest != leaf.signer_set.digest() {
+            return None;
+        }
+
+        child_statement_digests.push(leaf.statement.digest());
+        union.extend(leaf.signer_set.public_keys.iter().cloned());
+    }
+
+    let signer_set = SignerSetWitness::new(union);
+    Some(RecursiveAggregationNode {
+        statement: BatchVerificationStatement {
+            scheme: first.statement.scheme,
+            epoch: first.statement.epoch,
+            message: first.statement.message,
+            signer_count: signer_set.signer_count(),
+            signer_set_digest: signer_set.digest(),
+        },
+        child_statement_digests,
+    })
 }
 
 #[cfg(test)]
@@ -391,6 +510,83 @@ mod tests {
         assert_eq!(outcome.result.verified_count, 1);
         assert_eq!(outcome.result.first_invalid_index, Some(1));
         assert!(outcome.statement.is_none());
+    }
+
+    #[test]
+    fn builds_batch_leaf_with_deduplicated_signer_set() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let batch = [
+            (&pk1[..], &sig1[..]),
+            (&pk2[..], &sig2[..]),
+            (&pk1[..], &sig1[..]),
+        ];
+
+        let leaf = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &batch,
+        )
+        .expect("valid batch should build an aggregation leaf");
+
+        assert_eq!(leaf.statement.signer_count, 2);
+        assert_eq!(leaf.signer_set.signer_count(), 2);
+        assert_eq!(leaf.statement.signer_set_digest, leaf.signer_set.digest());
+    }
+
+    #[test]
+    fn aggregates_multiple_batch_leaves() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let (pk3, sig3, _, _) = sample_signature();
+
+        let left = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..]), (&pk2[..], &sig2[..])],
+        )
+        .expect("left leaf should build");
+        let right = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk2[..], &sig2[..]), (&pk3[..], &sig3[..])],
+        )
+        .expect("right leaf should build");
+
+        let parent = aggregate_batch_verification_leaves(&[left.clone(), right.clone()])
+            .expect("matching leaves should aggregate");
+
+        assert_eq!(parent.statement.scheme, left.statement.scheme);
+        assert_eq!(parent.statement.epoch, epoch);
+        assert_eq!(parent.statement.message, message);
+        assert_eq!(parent.statement.signer_count, 3);
+        assert_eq!(parent.child_statement_digests.len(), 2);
+    }
+
+    #[test]
+    fn rejects_aggregation_when_leaf_context_mismatches() {
+        let (pk1, sig1, message, epoch) = sample_signature();
+        let (pk2, sig2, _, _) = sample_signature();
+        let left = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk1[..], &sig1[..])],
+        )
+        .expect("left leaf should build");
+        let mut right = build_batch_verification_leaf(
+            LeanSigSchemeId::AbortingTargetSumLifetime6Dim46Base8,
+            epoch,
+            &message,
+            &[(&pk2[..], &sig2[..])],
+        )
+        .expect("right leaf should build");
+        right.statement.epoch += 1;
+
+        assert!(aggregate_batch_verification_leaves(&[left, right]).is_none());
     }
 }
 
